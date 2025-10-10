@@ -1,0 +1,37 @@
+# Ignore dataset directory (large, raw data)
+Data/
+arXiv-2409.02290v1/
+
+# Ignore LaTeX build artifacts and auxiliary files
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.bbl
+*.blg
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.nav
+*.snm
+*.vrb
+*.pdf
+
+# Python cache and environment
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+env/
+
+# Jupyter
+*.ipynb_checkpoints
+
+# VSCode
+.vscode/
+
+# OS
+Thumbs.db
+.DS_Store
