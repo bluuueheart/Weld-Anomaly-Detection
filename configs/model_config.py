@@ -7,14 +7,14 @@ AUDIO_MODEL_PATH = "models/ast-finetuned-audioset-14-14-0.443"
 
 # Video encoder config
 VIDEO_ENCODER = {
-    "model_name": "facebook/vjepa2-vitl-fpc64-256",
+    "model_name": VIDEO_MODEL_PATH,
     "embed_dim": 1024,
     "freeze_backbone": False,
 }
 
 # Image encoder config (DINOv2)
 IMAGE_ENCODER = {
-    "model_name": "facebook/dinov2-base",
+    "model_name": IMAGE_MODEL_PATH,
     "embed_dim": 768,
     "num_angles": 5,
     "aggregation": "mean",
@@ -23,7 +23,7 @@ IMAGE_ENCODER = {
 
 # Audio encoder config
 AUDIO_ENCODER = {
-    "model_name": "MIT/ast-finetuned-audioset-14-14-0.443",
+    "model_name": AUDIO_MODEL_PATH,
     "embed_dim": 768,
     "freeze_backbone": False,
 }

@@ -522,7 +522,7 @@ bash scripts/test_losses.sh
 bash scripts/train.sh
 
 # 从检查点恢复训练
-python src/train.py --resume outputs/checkpoints/latest.pth
+python src/train.py --resume /root/autodl-tmp/outputs/checkpoints/latest.pth
 ```
 
 ---

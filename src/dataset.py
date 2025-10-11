@@ -33,7 +33,7 @@ class WeldingDataset(Dataset):
 
     def __init__(
         self,
-        root_dir: str,
+        root_dir: str = None,
         mode: str = "dummy",
         num_samples: int = 32,
         num_frames: int = 8,
@@ -46,7 +46,30 @@ class WeldingDataset(Dataset):
         sensor_len: int = 128,
         sensor_channels: int = 6,
         seed: Optional[int] = 42,
+        # Backward-compatibility aliases
+        data_root: str = None,
+        video_length: int = None,
+        audio_sample_rate: int = None,
+        audio_duration: int = None,
+        sensor_length: int = None,
+        dummy: bool = None,
     ) -> None:
+        # Handle backward-compatibility aliases
+        if data_root is not None:
+            root_dir = data_root
+        if root_dir is None:
+            root_dir = "Data"  # default fallback
+        if video_length is not None:
+            num_frames = video_length
+        if audio_sample_rate is not None:
+            audio_sr = audio_sample_rate
+        if audio_duration is not None:
+            audio_frames = audio_duration
+        if sensor_length is not None:
+            sensor_len = sensor_length
+        if dummy is not None:
+            mode = "dummy" if dummy else "real"
+        
         self.root_dir = root_dir
         self.mode = mode
         self.num_samples = int(num_samples)
@@ -70,8 +93,15 @@ class WeldingDataset(Dataset):
 
         # For dummy mode, create simple label mapping
         if mode == "dummy":
-            # two classes: 0 normal, 1 anomaly
-            self._labels = [0 if i < self.num_samples // 2 else 1 for i in range(self.num_samples)]
+            # Ensure balanced classes across num_samples
+            # Generate labels that cycle through all classes
+            num_classes = 6  # welding dataset has 6 classes
+            self._labels = [i % num_classes for i in range(self.num_samples)]
+            # Shuffle to mix classes (random already imported at module level)
+            temp_list = list(zip(range(self.num_samples), self._labels))
+            random.shuffle(temp_list)
+            indices, self._labels = zip(*temp_list)
+            self._labels = list(self._labels)
             self._ids = [f"dummy_{i:04d}" for i in range(self.num_samples)]
         else:
             # real mode will scan directories
@@ -87,21 +117,51 @@ class WeldingDataset(Dataset):
         if not os.path.isdir(self.root_dir):
             return ids, labels
         
-        # Category mapping
-        cat_map = {"good_weld": 0, "crater_cracks": 1, "burn_through": 2,
-                   "excessive_penetration": 3, "porosity": 4, "spatter": 5}
-        
+        # Build category mapping from configs to keep a single source of truth.
+        try:
+            from configs.dataset_config import CATEGORIES
+        except Exception:
+            # fallback to previous ad-hoc mapping if config import fails
+            CATEGORIES = {
+                "good": 0,
+                "excessive_convexity": 1,
+                "undercut": 2,
+                "lack_of_fusion": 3,
+                "porosity_w-excessive_penetration": 4,
+                "porosity": 5,
+                "spatter": 6,
+                "burnthrough": 7,
+                "excessive_penetration": 8,
+                "crater_cracks": 9,
+                "warping": 10,
+                "overlap": 11,
+            }
+
+        # To avoid ambiguous matches (e.g. 'porosity' vs 'porosity_w-excessive_penetration')
+        # prefer the longest matching key when multiple keys are substrings of the
+        # folder name.
+        category_keys = sorted(CATEGORIES.keys(), key=lambda k: -len(k))
+
         for cat_folder in sorted(os.listdir(self.root_dir)):
             cat_path = os.path.join(self.root_dir, cat_folder)
             if not os.path.isdir(cat_path):
                 continue
             
-            # Extract label from folder name
-            label = 0  # default to good_weld
-            for key, val in cat_map.items():
-                if key in cat_folder.lower():
-                    label = val
+            # Extract label from folder name (first match wins)
+            folder_lower = cat_folder.lower()
+            label = None
+            matched_key = None
+            for key in category_keys:
+                if key.lower() in folder_lower:
+                    matched_key = key
+                    label = int(CATEGORIES[key])
                     break
+            # If no key matched, default to 'good' if available in CATEGORIES
+            if label is None:
+                if "good" in CATEGORIES:
+                    label = int(CATEGORIES["good"])
+                else:
+                    label = 0
             
             # Scan sample folders
             for sample_folder in sorted(os.listdir(cat_path)):
@@ -418,8 +478,17 @@ class WeldingDataset(Dataset):
 
         return out.astype(np.float32)
 
+    @staticmethod
+    def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Collate function for DataLoader (delegates to module-level function).
+        
+        This static method allows accessing collate_fn via dataset.collate_fn
+        for backward compatibility with test code.
+        """
+        return _collate_fn_impl(batch)
 
-def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+
+def _collate_fn_impl(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Simple collate that stacks tensors along batch dim.
 
     Accepts numpy arrays or torch tensors. If mixed, prefer torch if available.
@@ -461,5 +530,8 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         "meta": metas,
     }
 
+
+# Module-level alias for backward compatibility
+collate_fn = _collate_fn_impl
 
 __all__ = ["WeldingDataset", "collate_fn"]

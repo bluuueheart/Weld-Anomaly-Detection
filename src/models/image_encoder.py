@@ -40,18 +40,29 @@ class ImageEncoder(nn.Module):
         # Load pretrained DINOv2
         try:
             from transformers import AutoModel
+            import os
+
             model_path = local_model_path if local_model_path else model_name
-            try:
-                self.backbone = AutoModel.from_pretrained(
-                    model_path,
-                    local_files_only=True,
-                    trust_remote_code=True
-                )
-            except Exception:
-                # Fallback to online loading
-                self.backbone = AutoModel.from_pretrained(
-                    model_name,
-                    trust_remote_code=True
+            model_path_resolved = model_path
+            if not os.path.isabs(model_path_resolved):
+                model_path_resolved = os.path.join(os.getcwd(), model_path_resolved)
+
+            if os.path.exists(model_path_resolved):
+                try:
+                    self.backbone = AutoModel.from_pretrained(
+                        model_path_resolved,
+                        local_files_only=True,
+                        trust_remote_code=True,
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to load local DINOv2 model at '{model_path_resolved}': {e}.\n"
+                        "Ensure the folder contains 'config.json' and model weights (pytorch_model.bin or model.safetensors), and required packages are installed."
+                    )
+            else:
+                raise FileNotFoundError(
+                    f"Local DINOv2 model directory not found: '{model_path_resolved}'.\n"
+                    "Please place the pretrained model in that path before running."
                 )
         except ImportError as e:
             raise RuntimeError(

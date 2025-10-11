@@ -103,11 +103,12 @@ class QuadModalSOTAModel(nn.Module):
                 freeze_backbone=image_config.get("freeze_backbone", False),
                 local_model_path=image_config.get("local_model_path"),
             )
+            # AudioEncoder expects `model_path` for a local model directory.
+            audio_model_path = audio_config.get("local_model_path") or audio_config.get("model_name", "MIT/ast-finetuned-audioset-14-14-0.443")
             self.audio_encoder = AudioEncoder(
-                model_name=audio_config.get("model_name", "MIT/ast-finetuned-audioset-14-14-0.443"),
+                model_path=audio_model_path,
                 embed_dim=audio_config.get("embed_dim", 768),
                 freeze_backbone=audio_config.get("freeze_backbone", False),
-                local_model_path=audio_config.get("local_model_path"),
             )
             self.sensor_encoder = SensorEncoder(
                 input_dim=sensor_config.get("input_dim", 6),

@@ -32,18 +32,29 @@ class AudioEncoder(nn.Module):
         except ImportError:
             raise RuntimeError("transformers is required for AudioEncoder")
         
-        # Load pretrained AST model
-        try:
-            self.model = AutoModel.from_pretrained(
-                model_path,
-                trust_remote_code=True,
-                local_files_only=True,
-            )
-        except Exception:
-            # Fallback to online loading
-            self.model = AutoModel.from_pretrained(
-                "MIT/ast-finetuned-audioset-14-14-0.443",
-                trust_remote_code=True,
+        # Load pretrained AST model from local folder only. Fail fast if missing.
+        import os
+
+        model_path_resolved = model_path
+        if not os.path.isabs(model_path_resolved):
+            model_path_resolved = os.path.join(os.getcwd(), model_path_resolved)
+
+        if os.path.exists(model_path_resolved):
+            try:
+                self.model = AutoModel.from_pretrained(
+                    model_path_resolved,
+                    trust_remote_code=True,
+                    local_files_only=True,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to load local AST model at '{model_path_resolved}': {e}.\n"
+                    "Ensure the folder contains 'config.json' and model weights (pytorch_model.bin or model.safetensors), and required packages are installed."
+                )
+        else:
+            raise FileNotFoundError(
+                f"Local AST model directory not found: '{model_path_resolved}'.\n"
+                "Please place the pretrained model in that path before running."
             )
         
         # Freeze backbone if requested
@@ -59,6 +70,26 @@ class AudioEncoder(nn.Module):
             self.projection = nn.Linear(self.model_dim, embed_dim)
         else:
             self.projection = nn.Identity()
+
+        # Detect expected input shape from model config/architecture.
+        # AST models typically expect specific mel-spectrogram dimensions.
+        self._expected_input_shape: Optional[tuple] = None
+        try:
+            # Try to extract expected input shape from model config
+            if hasattr(self.model.config, 'num_mel_bins'):
+                expected_mels = self.model.config.num_mel_bins
+            else:
+                expected_mels = None
+            
+            if hasattr(self.model.config, 'max_length'):
+                expected_time = self.model.config.max_length
+            else:
+                expected_time = None
+            
+            if expected_mels and expected_time:
+                self._expected_input_shape = (expected_mels, expected_time)
+        except Exception:
+            self._expected_input_shape = None
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -69,25 +100,56 @@ class AudioEncoder(nn.Module):
         Returns:
             features: (batch, seq_len, embed_dim)
         """
-        # AST expects (batch, n_mels, time_frames)
+        # AST often expects (batch, n_mels, time_frames) or keyword 'inputs'
+        def _extract_features_from_outputs(outputs):
+            if hasattr(outputs, 'last_hidden_state'):
+                return outputs.last_hidden_state
+            elif isinstance(outputs, tuple):
+                return outputs[0]
+            else:
+                return outputs
+
+        # Normalize input to (B, n_mels, time_frames) for AST models
         if x.dim() == 4 and x.size(1) == 1:
-            x = x.squeeze(1)
-        
-        # Get features from AST
-        outputs = self.model(x)
-        
-        # Extract features
-        if hasattr(outputs, 'last_hidden_state'):
-            features = outputs.last_hidden_state
-        elif isinstance(outputs, tuple):
-            features = outputs[0]
+            x_img = x.squeeze(1)  # (B, n_mels, time)
+        elif x.dim() == 3:
+            x_img = x
         else:
-            features = outputs
-        
-        # Project to target dimension
-        features = self.projection(features)
-        
-        return features
+            raise RuntimeError(
+                f"AudioEncoder expects a 3D or 4D tensor (got shape {tuple(x.shape)}). "
+                "Ensure audio preprocessing produces (B, 1, n_mels, time_frames) or (B, n_mels, time_frames).")
+
+        # Resize input to match model's expected shape if needed (via interpolation)
+        if self._expected_input_shape is not None:
+            expected_mels, expected_time = self._expected_input_shape
+            current_mels, current_time = x_img.shape[-2], x_img.shape[-1]
+            
+            if (current_mels, current_time) != (expected_mels, expected_time):
+                # Interpolate to match expected dimensions
+                x_img = torch.nn.functional.interpolate(
+                    x_img.unsqueeze(1),  # (B, 1, n_mels, time)
+                    size=(expected_mels, expected_time),
+                    mode='bilinear',
+                    align_corners=False
+                ).squeeze(1)  # (B, n_mels, time)
+
+        # Call model with properly shaped input
+        try:
+            try:
+                outputs = self.model(x_img)
+            except TypeError:
+                try:
+                    outputs = self.model(inputs=x_img)
+                except TypeError:
+                    outputs = self.model(pixel_values=x_img)
+
+            features = _extract_features_from_outputs(outputs)
+            features = self.projection(features)
+            return features
+        except Exception as e:
+            # Provide a clear, non-silent failure so user can fix model weights
+            # or preprocessing rather than silently using a dummy path.
+            raise RuntimeError(f"AudioEncoder pretrained forward failed: {e}") from e
 
 
 class DummyAudioEncoder(nn.Module):

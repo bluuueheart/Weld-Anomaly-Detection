@@ -83,7 +83,8 @@ SCHEDULER_CONFIGS = {
     },
 }
 
-# Output directories
-OUTPUT_DIR = "outputs"
-CHECKPOINT_DIR = "outputs/checkpoints"
-LOG_DIR = "outputs/logs"
+# Output directories (user-requested base path)
+# Saved outputs will be placed under /root/autodl-tmp/outputs
+OUTPUT_DIR = "/root/autodl-tmp/outputs"
+CHECKPOINT_DIR = "/root/autodl-tmp/outputs/checkpoints"
+LOG_DIR = "/root/autodl-tmp/outputs/logs"

@@ -5,26 +5,38 @@ import torch.nn as nn
 
 
 class PositionalEncoding(nn.Module):
-    """Positional encoding for transformer."""
-    
-    def __init__(self, d_model: int, max_len: int = 512, dropout: float = 0.1) -> None:
+    """Positional encoding for transformer.
+
+    Supports both (batch, seq_len, embed_dim) and (seq_len, batch, embed_dim)
+    via the `batch_first` flag.
+    """
+
+    def __init__(self, d_model: int, max_len: int = 512, dropout: float = 0.1, batch_first: bool = False) -> None:
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
-        
-        # Create positional encoding
+        self.batch_first = batch_first
+
+        # Create positional encoding as (1, max_len, d_model)
         position = torch.arange(max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        pe = torch.zeros(max_len, d_model)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
         self.register_buffer('pe', pe)
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: (seq_len, batch, embed_dim)
+            x: either (batch, seq_len, embed_dim) or (seq_len, batch, embed_dim)
         """
-        x = x + self.pe[:x.size(0)]
+        if self.batch_first:
+            seq_len = x.size(1)
+            x = x + self.pe[:, :seq_len, :].to(x.dtype)
+        else:
+            seq_len = x.size(0)
+            x = x + self.pe[0, :seq_len, :].unsqueeze(1).to(x.dtype)
+
         return self.dropout(x)
 
 
@@ -63,16 +75,16 @@ class SensorEncoder(nn.Module):
         # Input projection
         self.input_proj = nn.Linear(input_dim, embed_dim)
         
-        # Positional encoding
-        self.pos_encoder = PositionalEncoding(embed_dim, max_seq_len, dropout)
-        
-        # Transformer encoder
+        # Positional encoding (use batch_first to match transformer)
+        self.pos_encoder = PositionalEncoding(embed_dim, max_seq_len, dropout, batch_first=True)
+
+        # Transformer encoder with batch_first to avoid nested tensor warning
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            batch_first=False,  # Will use (seq, batch, embed)
+            batch_first=True,
         )
         self.transformer = nn.TransformerEncoder(
             encoder_layer,
@@ -92,20 +104,14 @@ class SensorEncoder(nn.Module):
         Returns:
             features: (batch, seq_len, embed_dim)
         """
-        # Project input to embedding dimension
-        x = self.input_proj(x)  # (batch, seq_len, embed_dim)
-        
-        # Transpose for transformer: (seq_len, batch, embed_dim)
-        x = x.transpose(0, 1)
-        
-        # Add positional encoding
+        # Project input to embedding dimension -> (batch, seq_len, embed_dim)
+        x = self.input_proj(x)
+
+        # Add positional encoding (batch_first=True)
         x = self.pos_encoder(x)
-        
+
         # Apply transformer
         x = self.transformer(x, mask=mask)
-        
-        # Transpose back: (batch, seq_len, embed_dim)
-        x = x.transpose(0, 1)
         
         # Layer norm
         x = self.norm(x)

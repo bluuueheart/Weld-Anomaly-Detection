@@ -145,7 +145,9 @@
 
 -----
 
-## 本地快速检测: 数据集管线单元测试
+## 快速测试与训练
+
+### 本地快速检测: 数据集管线单元测试
 
 项目包含一个轻量级的 `WeldingDataset` 的 dummy 实现，用于在没有完整依赖和数据的情况下快速验证数据管线。
 
@@ -157,3 +159,33 @@ python -m pytest -q
 ```
 
 测试文件：`tests/test_dataset.py`。该测试仅依赖于 `numpy` 和 `pytest`，并不会读取真实数据。
+
+### 服务器环境完整测试
+
+在服务器上运行完整测试（需要PyTorch + CUDA）:
+
+```bash
+# 一键运行所有测试
+bash scripts/test_server.sh
+
+# 或分步运行
+python tests/test_dataset_labels.py    # 检查真实数据标签分布
+python tests/test_loss_and_labels.py   # 测试loss函数和采样器
+python src/train.py --quick-test --debug  # 快速训练测试
+```
+
+### 正式训练
+
+```bash
+# 使用默认配置（CUDA自动检测，batch_size=2）
+python src/train.py
+
+# 指定参数
+python src/train.py --batch-size 16 --num-epochs 100
+
+# 混合精度训练（推荐GPU环境）
+python src/train.py --batch-size 32 --mixed-precision
+
+# 调试模式（查看第一个batch的详细信息）
+python src/train.py --debug
+```

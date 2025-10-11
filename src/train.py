@@ -10,9 +10,11 @@ import time
 import json
 from pathlib import Path
 from datetime import datetime
+from collections import Counter
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 
@@ -22,6 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.models import create_quadmodal_model
 from src.dataset import WeldingDataset
 from src.losses import SupConLoss, CombinedLoss
+from src.samplers import StratifiedBatchSampler
 from configs.dataset_config import *
 from configs.model_config import *
 from configs.train_config import *
@@ -41,7 +44,10 @@ class Trainer:
         self.config = config
         self.use_dummy = use_dummy
         self.device = torch.device(config.get("device", "cuda"))
-        
+
+        # Default debug flag (can be overridden later)
+        self.debug = bool(config.get("debug_mode", False))
+
         # Create output directories
         self.output_dir = Path(OUTPUT_DIR)
         self.checkpoint_dir = Path(CHECKPOINT_DIR)
@@ -113,14 +119,38 @@ class Trainer:
             dummy=self.use_dummy,
         )
         
-        self.train_loader = DataLoader(
-            train_dataset,
-            batch_size=self.config["batch_size"],
-            shuffle=True,
-            num_workers=self.config.get("num_workers", 4),
-            pin_memory=self.config.get("pin_memory", True),
-            collate_fn=train_dataset.collate_fn,
-        )
+        if self.debug:
+            train_label_counts = Counter(train_dataset._labels)
+            print(f"  Train label distribution: {dict(sorted(train_label_counts.items()))}")
+
+        drop_last = self.config.get("drop_last", self.config["batch_size"] > 1)
+
+        # Use stratified sampler for better class balance in batches
+        use_stratified = self.config.get("use_stratified_sampler", True)
+        if use_stratified and len(train_dataset) > 0:
+            train_batch_sampler = StratifiedBatchSampler(
+                labels=train_dataset._labels,
+                batch_size=self.config["batch_size"],
+                drop_last=drop_last,
+            )
+            self.train_loader = DataLoader(
+                train_dataset,
+                batch_sampler=train_batch_sampler,
+                num_workers=self.config.get("num_workers", 4),
+                pin_memory=self.config.get("pin_memory", True),
+                collate_fn=train_dataset.collate_fn,
+            )
+            print(f"  Using StratifiedBatchSampler for balanced batches")
+        else:
+            self.train_loader = DataLoader(
+                train_dataset,
+                batch_size=self.config["batch_size"],
+                shuffle=True,
+                num_workers=self.config.get("num_workers", 4),
+                pin_memory=self.config.get("pin_memory", True),
+                collate_fn=train_dataset.collate_fn,
+                drop_last=drop_last,
+            )
         
         # Validation dataset (same as train for now)
         val_dataset = WeldingDataset(
@@ -134,6 +164,10 @@ class Trainer:
             dummy=self.use_dummy,
         )
         
+        if self.debug:
+            val_label_counts = Counter(val_dataset._labels)
+            print(f"  Val label distribution: {dict(sorted(val_label_counts.items()))}")
+
         self.val_loader = DataLoader(
             val_dataset,
             batch_size=self.config["batch_size"],
@@ -257,15 +291,106 @@ class Trainer:
             for key in batch:
                 if isinstance(batch[key], torch.Tensor):
                     batch[key] = batch[key].to(self.device)
+
+            # Lightweight debug: print labels stats for first batch when enabled
+            if getattr(self, 'debug', False) and batch_idx == 0:
+                try:
+                    lbls = batch.get('label')
+                    if isinstance(lbls, torch.Tensor):
+                        unique, counts = torch.unique(lbls, return_counts=True)
+                        print(f"[DEBUG] Batch labels - unique: {unique.tolist()}, counts: {counts.tolist()}")
+                    else:
+                        print(f"[DEBUG] Labels (non-tensor): {lbls}")
+                except Exception as e:
+                    print(f"[DEBUG] Failed to inspect labels: {e}")
             
             # Forward pass
             if self.use_amp:
                 with autocast():
                     features = self.model(batch)
-                    loss = self.criterion(features, batch["label"])
             else:
                 features = self.model(batch)
-                loss = self.criterion(features, batch["label"])
+
+            # Debug: inspect feature statistics for first batch
+            if getattr(self, 'debug', False) and batch_idx == 0:
+                try:
+                    if isinstance(features, torch.Tensor):
+                        if features.shape[0] < 2:
+                            print("[DEBUG] Batch has fewer than 2 samples; SupCon loss will be zero. Consider increasing batch size or ensuring stratified sampling.")
+                        f_mean = float(features.mean().detach())
+                        f_std = float(features.std().detach())
+                        f_min = float(features.min().detach())
+                        f_max = float(features.max().detach())
+                        any_nan = bool(torch.isnan(features).any())
+                        any_inf = bool(torch.isinf(features).any())
+                        print(f"[DEBUG] Features - mean: {f_mean:.6f}, std: {f_std:.6f}, "
+                              f"min: {f_min:.6f}, max: {f_max:.6f}, nan: {any_nan}, inf: {any_inf}")
+                        
+                        # Pairwise cosine similarities (small sample)
+                        if features.dim() == 2:
+                            feats_norm = F.normalize(features, dim=1)
+                            cos_sim = torch.matmul(feats_norm, feats_norm.T)
+                            l2_dist = torch.cdist(features, features, p=2)
+                            b = cos_sim.size(0)
+                            display_n = min(5, b)
+                            
+                            print(f"[DEBUG] Pairwise cosine similarity (top {display_n}x{display_n}):")
+                            cos_small = cos_sim[:display_n, :display_n].detach().cpu().numpy()
+                            for row in cos_small:
+                                print(f"        {' '.join(f'{v:7.4f}' for v in row)}")
+                            
+                            print(f"[DEBUG] Pairwise L2 distance (top {display_n}x{display_n}):")
+                            l2_small = l2_dist[:display_n, :display_n].detach().cpu().numpy()
+                            for row in l2_small:
+                                print(f"        {' '.join(f'{v:7.3f}' for v in row)}")
+                    else:
+                        print(f"[DEBUG] Features not a tensor: {type(features)}")
+                except Exception as e:
+                    print(f"[DEBUG] Failed to inspect features: {e}")
+
+            # Compute loss
+            loss_output = self.criterion(features, batch["label"])
+            
+            # Handle both scalar and dict returns
+            if isinstance(loss_output, dict):
+                loss = loss_output['total']
+                loss_value = loss.item()
+            else:
+                loss = loss_output
+                loss_value = loss.item()
+            
+            # Debug: inspect loss computation for first batch
+            if getattr(self, 'debug', False) and batch_idx == 0:
+                try:
+                    labels = batch['label']
+                    temp = getattr(self.criterion, 'temperature', 0.07)
+                    
+                    # Reproduce SupCon computation on device
+                    feats_norm = F.normalize(features.detach(), dim=1)
+                    sim_matrix = torch.matmul(feats_norm, feats_norm.T) / temp
+                    logits_max, _ = torch.max(sim_matrix, dim=1, keepdim=True)
+                    logits = sim_matrix - logits_max
+                    
+                    # Positive mask (same label, excluding diagonal)
+                    labels_col = labels.contiguous().view(-1, 1)
+                    mask_pos = torch.eq(labels_col, labels_col.T).float()
+                    mask_diag = torch.eye(mask_pos.size(0), device=self.device)
+                    mask_pos = mask_pos * (1 - mask_diag)
+                    
+                    mask_sum = mask_pos.sum(1)
+                    exp_logits = torch.exp(logits) * (1 - mask_diag)
+                    log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-12)
+                    mean_log_prob_pos = (mask_pos * log_prob).sum(1) / torch.clamp(mask_sum, min=1.0)
+                    
+                    print(f"[DEBUG] SupCon internals:")
+                    print(f"        Temperature: {temp}")
+                    print(f"        Pos pairs per sample: {mask_sum.cpu().numpy()}")
+                    print(f"        Mean log prob (first 5): {mean_log_prob_pos[:5].cpu().numpy()}")
+                    if float(mask_sum.max().item()) < 1.0:
+                        print("        ⚠️ No positive pairs in this batch; SupCon loss will be ~0. Increase batch size or adjust sampler.")
+                    print(f"        Final loss value: {loss_value:.6f}")
+                except Exception as e:
+                    print(f"[DEBUG] Failed to inspect loss: {e}")
             
             # Backward pass
             self.optimizer.zero_grad()
@@ -290,7 +415,7 @@ class Trainer:
                 self.optimizer.step()
             
             # Update metrics
-            epoch_loss += loss.item()
+            epoch_loss += loss_value
             self.global_step += 1
             
             # Logging
@@ -299,7 +424,7 @@ class Trainer:
                 avg_loss = epoch_loss / (batch_idx + 1)
                 
                 print(f"  [{epoch:3d}][{batch_idx+1:3d}/{len(self.train_loader):3d}] "
-                      f"Loss: {loss.item():.4f} | Avg: {avg_loss:.4f} | LR: {lr:.2e}")
+                      f"Loss: {loss_value:.4f} | Avg: {avg_loss:.4f} | LR: {lr:.2e}")
         
         epoch_time = time.time() - epoch_start
         avg_loss = epoch_loss / len(self.train_loader)
@@ -325,9 +450,15 @@ class Trainer:
             
             # Forward pass
             features = self.model(batch)
-            loss = self.criterion(features, batch["label"])
+            loss_output = self.criterion(features, batch["label"])
             
-            val_loss += loss.item()
+            # Handle both scalar and dict returns
+            if isinstance(loss_output, dict):
+                loss_value = loss_output['total'].item()
+            else:
+                loss_value = loss_output.item()
+            
+            val_loss += loss_value
         
         avg_loss = val_loss / len(self.val_loader)
         
@@ -434,21 +565,51 @@ class Trainer:
 
 def main():
     """Main training function."""
-    # Use dummy mode for testing
-    use_dummy = True
-    
-    # Override config for quick test
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Train QuadModal model')
+    parser.add_argument('--batch-size', type=int, help='Batch size (overrides config)')
+    parser.add_argument('--num-epochs', type=int, help='Number of epochs (overrides config)')
+    parser.add_argument('--device', type=str, help='Device to use, e.g. "cuda" or "cpu"')
+    parser.add_argument('--mixed-precision', action='store_true', help='Enable AMP')
+    parser.add_argument('--quick-test', action='store_true', help='Run quick smoke test (dummy data, small config)')
+    parser.add_argument('--use-dummy', action='store_true', help='Use dummy datasets and encoders')
+    parser.add_argument('--debug', action='store_true', help='Enable lightweight debug logs for first batch')
+    args = parser.parse_args()
+
+    # Base config from file
     config = TRAIN_CONFIG.copy()
-    config["num_epochs"] = 3
-    config["batch_size"] = 4
-    config["log_interval"] = 1
-    config["val_interval"] = 1
-    config["save_interval"] = 1
-    config["device"] = "cpu"  # Use CPU for testing
     
+    # Default to CUDA if available (server environment)
+    if 'device' not in config or config['device'] == 'cuda':
+        config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # If quick-test: sensible small overrides for fast smoke runs
+    if args.quick_test:
+        config['num_epochs'] = 3
+        config['batch_size'] = 4
+        config['log_interval'] = 1
+        config['val_interval'] = 1
+        config['save_interval'] = 1
+        use_dummy = True
+    else:
+        use_dummy = bool(args.use_dummy)
+
+    # Command-line overrides
+    if args.batch_size is not None:
+        config['batch_size'] = args.batch_size
+    if args.num_epochs is not None:
+        config['num_epochs'] = args.num_epochs
+    if args.device is not None:
+        config['device'] = args.device
+    if args.mixed_precision:
+        config['mixed_precision'] = True
+
     # Create trainer
     trainer = Trainer(config, use_dummy=use_dummy)
-    
+    # Optional lightweight debug info printed for first batch
+    trainer.debug = bool(getattr(args, 'debug', False))
+
     # Train
     trainer.train()
 

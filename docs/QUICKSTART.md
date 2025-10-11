@@ -17,37 +17,96 @@
 
 ---
 
-## 1. 环境准备
-
-### 1.1 创建 Conda 环境
-
-```bash
-# 创建 Python 3.10 环境
-conda create -n weld_sota python=3.10
-conda activate weld_sota
 ```
+======================================================================
+QUADMODAL MODEL TEST SUITE
+======================================================================
 
-### 1.2 安装 PyTorch
+======================================================================
+Testing QuadModalSOTAModel (Dummy Encoders)
+======================================================================
 
-**根据您的 CUDA 版本选择合适的命令:**
+Model Configuration:
+  Total parameters: 14,045,824
+  Trainable parameters: 14,045,824
+  Output dimension: 512
 
-```bash
-# CUDA 11.8 (推荐)
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+Input shapes:
+  video: (4, 32, 3, 224, 224)
+  post_weld_images: (4, 5, 3, 224, 224)
+  audio: (4, 1, 128, 256)
+  sensor: (4, 256, 6)
 
-# CUDA 12.1
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+Forward pass (without attention)...
+  Output shape: (4, 512)
+  Output range: [-0.1971, 0.1968]
+  ✅ Forward pass successful
 
-# CPU 版本 (仅用于测试)
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+Forward pass (with attention)...
+  Output shape: (4, 512)
+  Attention keys: ['video', 'image', 'audio', 'sensor']
+  ✅ Attention weights returned
+
+Testing gradient flow...
+  ✅ All gradients valid
+
+✅ QuadModalSOTAModel (Dummy) test passed!
+
+
+======================================================================
+Testing create_quadmodal_model Factory
+======================================================================
+
+Model created via factory:
+  Output dimension: 512
+  Parameters: 14,045,824
+  Output shape: (2, 512)
+
+✅ Factory function test passed!
+
+
+======================================================================
+Testing Encoder Freezing
+======================================================================
+
+Initial trainable parameters: 14,045,824
+After freezing encoders: 3,409,408
+After unfreezing encoders: 14,045,824
+
+✅ Encoder freezing test passed!
+
+
+======================================================================
+Testing Different Batch Sizes
+======================================================================
+  Batch size  1: (1, 512) ✅
+  Batch size  2: (2, 512) ✅
+  Batch size  4: (4, 512) ✅
+  Batch size  8: (8, 512) ✅
+
+✅ All batch sizes passed!
+
+
+======================================================================
+Testing with Real DataLoader
+======================================================================
+
+DataLoader batch shapes:
+  video: (2, 32, 3, 64, 64)
+  post_weld_images: (2, 5, 3, 224, 224)
+  audio: (2, 1, 64, 256)
+  sensor: (2, 256, 6)
+  labels: (2,)
+
+Model output shape: (2, 512)
+
+✅ DataLoader integration test passed!
+
+
+======================================================================
+✅ ALL QUADMODAL MODEL TESTS PASSED!
+======================================================================
 ```
-
-### 1.3 安装项目依赖
-
-```bash
-# 模型加载与处理
-pip install transformers>=4.30.0
-pip install timm>=0.9.0
 
 # 数据处理
 pip install pandas>=2.0.0
@@ -80,13 +139,13 @@ mkdir -p models
 cd models
 
 # 下载 V-JEPA (视频编码器)
-git clone https://huggingface.co/facebook/vjepa2-vitl-fpc64-256
+git clone https://hf-mirror.com/facebook/vjepa2-vitl-fpc64-256
 
 # 下载 DINOv2 (图片编码器)
-git clone https://huggingface.co/facebook/dinov2-base
+git clone https://hf-mirror.com/facebook/dinov2-base
 
 # 下载 AST (音频编码器)
-git clone https://huggingface.co/MIT/ast-finetuned-audioset-14-14-0.443
+git clone https://hf-mirror.com/MIT/ast-finetuned-audioset-14-14-0.443
 
 cd ..
 ```
@@ -235,6 +294,29 @@ Testing Gradients
 
 ✅ ALL ENCODER TESTS PASSED!
 ```
+
+### 实际输出（示例）
+
+下面为在开发容器中一次真实运行 `bash scripts/test_encoders.sh` 的简洁示例输出（仅摘要）：
+
+```
+Testing VideoEncoder
+  DummyVideoEncoder -> Output: (2, 64, 1024) ✅
+  VideoEncoder (pretrained) -> Output: (2, 3136, 1024) ✅
+
+Testing AudioEncoder
+  DummyAudioEncoder -> Output: (2, 32, 768) ✅
+  AudioEncoder (pretrained) -> Output: (2, 659, 768) ✅
+
+Testing ImageEncoder
+  DummyImageEncoder -> Output: (2, 1, 768) ✅
+  ImageEncoder (pretrained) -> Output: (2, 257, 768) ✅
+
+Testing SensorEncoder
+  SensorEncoder -> Output: (2, 256, 256) ✅
+```
+
+此输出表明：在该环境下（有本地模型或已适配输入）真实预训练编码器可成功前向并返回特征维度；若你的环境没有本地模型，将只会看到 Dummy 编码器的测试通过。
 
 **结果保存**: 无 (纯测试,不保存)
 
@@ -554,20 +636,32 @@ TRAIN_CONFIG = {
 
 **基础训练 (使用默认配置):**
 ```bash
+# 使用脚本启动（脚本内会调用 `python src/train.py`）
 bash scripts/train.sh
 ```
 
-**自定义训练 (修改配置后):**
+**自定义训练 (通过命令行参数覆盖配置):**
 ```bash
-# 直接运行
+# 直接运行（默认使用 configs/train_config.py 中的 device，优先使用 CUDA）
 python src/train.py
 
-# 或使用 nohup 后台运行
-nohup bash scripts/train.sh > training.log 2>&1 &
+# 指定参数示例：
+python src/train.py --batch-size 8 --device cuda --mixed-precision
+python src/train.py --debug
+# 快速 smoke 测试（使用短期小批量并启用 dummy，便于快速验证）
+python src/train.py --quick-test
+
+# 使用 dummy 编码器并仅跑 1 个 epoch（离线/无预训练模型时有用）
+python src/train.py --use-dummy --num-epochs 1
+
+# 或使用 nohup 后台运行（Linux）
+=nohup bash scripts/train.sh > training.log 2>&1 &
 
 # 查看训练日志
 tail -f training.log
 ```
+
+注意：默认输出目录已配置为 `/root/autodl-tmp/outputs`（在 `configs/train_config.py` 中设置）。
 
 ### 5.3 训练输出
 
@@ -646,12 +740,12 @@ outputs/
 **查看训练日志:**
 ```bash
 # 查看 JSON 日志
-python -m json.tool outputs/logs/training_log.json
+python -m json.tool /root/autodl-tmp/outputs/logs/training_log.json
 
 # 提取关键指标
 python -c "
 import json
-with open('outputs/logs/training_log.json') as f:
+with open('/root/autodl-tmp/outputs/logs/training_log.json') as f:
     log = json.load(f)
     train_losses = [m['loss'] for m in log['train']]
     val_losses = [m['loss'] for m in log['val']]
@@ -667,7 +761,7 @@ with open('outputs/logs/training_log.json') as f:
 pip install tensorboard
 
 # 启动 (如果实现了 TensorBoard 集成)
-tensorboard --logdir outputs/logs
+tensorboard --port 6007 --logdir /root/autodl-tmp/outputs/logs
 ```
 
 ---
@@ -688,10 +782,10 @@ tensorboard --logdir outputs/logs
 
 | 输出类型 | 文件路径 | 内容 |
 |---------|---------|------|
-| 最新模型 | `outputs/checkpoints/latest.pth` | 最后一个epoch的模型状态 |
-| 最佳模型 | `outputs/checkpoints/best.pth` | 验证损失最低的模型 |
-| 周期检查点 | `outputs/checkpoints/epoch_XXX.pth` | 定期保存的模型 |
-| 训练日志 | `outputs/logs/training_log.json` | 完整训练历史(损失、学习率等) |
+| 最新模型 | `/root/autodl-tmp/outputs/checkpoints/latest.pth` | 最后一个epoch的模型状态 |
+| 最佳模型 | `/root/autodl-tmp/outputs/checkpoints/best.pth` | 验证损失最低的模型 |
+| 周期检查点 | `/root/autodl-tmp/outputs/checkpoints/epoch_XXX.pth` | 定期保存的模型 |
+| 训练日志 | `/root/autodl-tmp/outputs/logs/training_log.json` | 完整训练历史(损失、学习率等) |
 
 **训练日志结构 (training_log.json):**
 ```json
