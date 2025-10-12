@@ -536,61 +536,8 @@ Testing CombinedLoss...
 bash scripts/test_dataset.sh
 bash scripts/test_encoders.sh
 bash scripts/test_fusion.sh
-bash scripts/test_model.sh
-bash scripts/test_losses.sh
+# bash scripts/test_model.sh
 ```
-
-**或者创建一个完整测试脚本:**
-
-创建 `scripts/test_all.sh`:
-```bash
-#!/bin/bash
-# Complete test suite
-
-echo "======================================================================"
-echo "RUNNING COMPLETE TEST SUITE"
-echo "======================================================================"
-echo ""
-
-cd "$(dirname "$0")/.."
-
-echo ">>> Test 1/5: Dataset"
-bash scripts/test_dataset.sh
-if [ $? -ne 0 ]; then echo "❌ Dataset test failed"; exit 1; fi
-echo ""
-
-echo ">>> Test 2/5: Encoders"
-bash scripts/test_encoders.sh
-if [ $? -ne 0 ]; then echo "❌ Encoder test failed"; exit 1; fi
-echo ""
-
-echo ">>> Test 3/5: Fusion"
-bash scripts/test_fusion.sh
-if [ $? -ne 0 ]; then echo "❌ Fusion test failed"; exit 1; fi
-echo ""
-
-echo ">>> Test 4/5: Model"
-bash scripts/test_model.sh
-if [ $? -ne 0 ]; then echo "❌ Model test failed"; exit 1; fi
-echo ""
-
-echo ">>> Test 5/5: Losses"
-bash scripts/test_losses.sh
-if [ $? -ne 0 ]; then echo "❌ Loss test failed"; exit 1; fi
-echo ""
-
-echo "======================================================================"
-echo "✅ ALL TESTS PASSED!"
-echo "======================================================================"
-```
-
-**运行完整测试:**
-```bash
-bash scripts/test_all.sh
-```
-
-**预期总耗时**: 约 2-5 分钟 (取决于硬件)
-
 ---
 
 ## 5. 训练模型

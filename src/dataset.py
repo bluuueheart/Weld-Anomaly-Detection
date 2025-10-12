@@ -35,6 +35,8 @@ class WeldingDataset(Dataset):
         self,
         root_dir: str = None,
         mode: str = "dummy",
+        split: str = None,  # 'train', 'test', or None (all samples)
+        manifest_path: str = "configs/manifest.csv",
         num_samples: int = 32,
         num_frames: int = 8,
         frame_size: int = 64,
@@ -72,6 +74,8 @@ class WeldingDataset(Dataset):
         
         self.root_dir = root_dir
         self.mode = mode
+        self.split = split  # Store split parameter
+        self.manifest_path = manifest_path
         self.num_samples = int(num_samples)
         self.num_frames = int(num_frames)
         self.frame_size = int(frame_size)
@@ -107,12 +111,97 @@ class WeldingDataset(Dataset):
             # real mode will scan directories
             self._ids, self._labels = self._scan_real_files()
 
+    def _load_manifest(self) -> Tuple[List[str], List[int], List[str]]:
+        """Load manifest.csv and return (sample_paths, labels, splits).
+        
+        Returns:
+            sample_paths: List of sample subdirectories (e.g., "2_good_weld_2_02-09-23_Fe410/04-01-23-0024-00")
+            labels: List of integer labels
+            splits: List of split names ("TRAIN" or "TEST")
+        """
+        import csv
+        
+        sample_paths, labels, splits = [], [], []
+        
+        # Category name to label mapping (normalize to match CSV)
+        CATEGORY_MAP = {
+            "good": 0,
+            "excessive_convexity": 1,
+            "undercut": 2,
+            "lack_of_fusion": 3,
+            "porosity": 5,
+            "spatter": 6,
+            "burnthrough": 7,
+            "porosity_w_excessive_penetration": 4,
+            "excessive_penetration": 8,
+            "excessive penetration": 8,  # Handle space variant
+            "crater_cracks": 9,
+            "warping": 10,
+            "overlap": 11,
+        }
+        
+        if not os.path.isfile(self.manifest_path):
+            return sample_paths, labels, splits
+        
+        with open(self.manifest_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                category = row.get('CATEGORY', '').strip()
+                subdir = row.get('SUBDIRS', '').strip()
+                split_val = row.get('SPLIT', '').strip().upper()
+                
+                if not subdir or not category:
+                    continue
+                
+                # Map category to label
+                category_key = category.lower().replace(' ', '_')
+                label = CATEGORY_MAP.get(category_key, 0)
+                
+                sample_paths.append(subdir)
+                labels.append(label)
+                splits.append(split_val)
+        
+        return sample_paths, labels, splits
+
     def _scan_real_files(self) -> Tuple[List[str], List[int]]:
         """Scan root_dir and collect sample ids with labels.
-
-        Data structure: Data/<category_folder>/<sample_id>/
-        Category folders like "1_good_weld_*", "7_spatter", etc.
+        
+        Uses manifest.csv if available, otherwise falls back to directory scanning.
         """
+        # Try loading from manifest first
+        if os.path.isfile(self.manifest_path):
+            sample_paths, labels, splits = self._load_manifest()
+
+            # Filter by split if specified
+            if self.split is not None:
+                split_filter = self.split.upper()
+                filtered_paths, filtered_labels = [], []
+                for path, label, split_val in zip(sample_paths, labels, splits):
+                    if split_val == split_filter:
+                        filtered_paths.append(path)
+                        filtered_labels.append(label)
+            else:
+                filtered_paths, filtered_labels = sample_paths, labels
+
+            # Remove entries that don't exist on disk to avoid DataLoader worker crashes
+            final_paths, final_labels = [], []
+            skipped_examples = []
+            for p, l in zip(filtered_paths, filtered_labels):
+                full = os.path.join(self.root_dir, p)
+                if os.path.isdir(full):
+                    final_paths.append(p)
+                    final_labels.append(l)
+                else:
+                    skipped_examples.append(p)
+
+            if skipped_examples:
+                # Print a concise summary so the user knows some manifest entries were missing
+                example = skipped_examples[:3]
+                print(f"[WeldingDataset] Skipped {len(skipped_examples)} missing samples from manifest (examples: {example})")
+
+            return final_paths, final_labels
+        
+        # Fallback to directory scanning (original logic)
         ids, labels = [], []
         if not os.path.isdir(self.root_dir):
             return ids, labels
@@ -232,9 +321,7 @@ class WeldingDataset(Dataset):
         """
         sid = self._ids[idx]
         sample_dir = os.path.join(self.root_dir, sid)
-        if not os.path.isdir(sample_dir):
-            raise FileNotFoundError(f"Sample directory not found: {sample_dir}")
-
+        
         # Load modalities with helper functions
         video = self._read_video(sample_dir)
         images = self._read_post_weld_images(sample_dir)

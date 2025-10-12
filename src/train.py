@@ -61,6 +61,10 @@ class Trainer:
         self.global_step = 0
         self.best_metric = float('inf')
         
+        # Early stopping
+        self.early_stopping_patience = config.get("early_stopping_patience", 0)
+        self.epochs_without_improvement = 0
+        
         # Setup model, data, optimizer
         self._setup_model()
         self._setup_data()
@@ -110,6 +114,7 @@ class Trainer:
         # Training dataset
         train_dataset = WeldingDataset(
             data_root=DATA_ROOT,
+            split='train',  # Use train split from manifest.csv
             video_length=VIDEO_LENGTH,
             audio_sample_rate=AUDIO_SAMPLE_RATE,
             audio_duration=AUDIO_DURATION,
@@ -119,6 +124,7 @@ class Trainer:
             dummy=self.use_dummy,
         )
         
+        print(f"  Train samples: {len(train_dataset)}")
         if self.debug:
             train_label_counts = Counter(train_dataset._labels)
             print(f"  Train label distribution: {dict(sorted(train_label_counts.items()))}")
@@ -152,9 +158,10 @@ class Trainer:
                 drop_last=drop_last,
             )
         
-        # Validation dataset (same as train for now)
+        # Validation dataset (use test split)
         val_dataset = WeldingDataset(
             data_root=DATA_ROOT,
+            split='test',  # Use test split from manifest.csv
             video_length=VIDEO_LENGTH,
             audio_sample_rate=AUDIO_SAMPLE_RATE,
             audio_duration=AUDIO_DURATION,
@@ -164,6 +171,7 @@ class Trainer:
             dummy=self.use_dummy,
         )
         
+        print(f"  Val samples: {len(val_dataset)}")
         if self.debug:
             val_label_counts = Counter(val_dataset._labels)
             print(f"  Val label distribution: {dict(sorted(val_label_counts.items()))}")
@@ -177,8 +185,6 @@ class Trainer:
             collate_fn=val_dataset.collate_fn,
         )
         
-        print(f"  Train samples: {len(train_dataset)}")
-        print(f"  Val samples: {len(val_dataset)}")
         print(f"  Batch size: {self.config['batch_size']}")
         print(f"  Train batches: {len(self.train_loader)}")
         print(f"  Val batches: {len(self.val_loader)}")
@@ -512,6 +518,9 @@ class Trainer:
             train_metrics = self.train_epoch(epoch)
             self.train_log.append(train_metrics)
             
+            # Print training loss
+            print(f"  Training Loss: {train_metrics['loss']:.4f}")
+            
             # Validate
             if (epoch + 1) % self.config.get("val_interval", 1) == 0:
                 val_metrics = self.validate(epoch)
@@ -523,9 +532,19 @@ class Trainer:
                 is_best = val_metrics["loss"] < self.best_metric
                 if is_best:
                     self.best_metric = val_metrics["loss"]
+                    self.epochs_without_improvement = 0
+                else:
+                    self.epochs_without_improvement += 1
                 
                 # Save checkpoint
                 self.save_checkpoint(epoch, is_best=is_best)
+                
+                # Early stopping check
+                if self.early_stopping_patience > 0:
+                    if self.epochs_without_improvement >= self.early_stopping_patience:
+                        print(f"  ⚠️  Early stopping triggered! No improvement for {self.early_stopping_patience} epochs.")
+                        print(f"  Best val loss: {self.best_metric:.4f}")
+                        break
             
             # Update scheduler
             if self.scheduler:

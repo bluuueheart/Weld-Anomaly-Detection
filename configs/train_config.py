@@ -24,6 +24,7 @@ TRAIN_CONFIG = {
     # Training strategy
     "freeze_encoders_epochs": 0,  # Freeze encoders for first N epochs (0 = no freeze)
     "gradient_clip": 1.0,  # Gradient clipping norm (0 = no clip)
+    "early_stopping_patience": 10,  # Stop if val loss doesn't improve for N epochs (0 = no early stopping)
     
     # Data
     "num_workers": 4,

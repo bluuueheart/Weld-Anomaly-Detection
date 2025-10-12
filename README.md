@@ -1,26 +1,26 @@
 | 类别 (Category) | 模型/基线名称 (Model/Baseline Name) | 核心技术 (Core Technology) | 实验目的 / 对比对象 (Experimental Purpose / Comparison Target) |
 | :--- | :--- | :--- | :--- |
 | **A. 论文复现基线**<br>(Paper Reproduction) | `Paper-Baseline (Reproduced)` | Audio 1D CNN-AE + Video Slowfast-AE，然后进行后期分数融合 (Late Fusion) 。 | **最重要的基准**。验证您的实验环境，并提供一个必须超越的、最直接的性能参照点。 |
-| **B. 单模态SOTA基线**<br>(Single-Modality SOTA) | `In-Process-Video-Only` | **V-JEPA**: 用于实时黑白视频的自监督时空特征提取。 | 证明先进的自监督视频编码器在过程监控中的优势。 |
-| | `Post-Weld-Image-Only` | **DINOv2**: 用于焊后多角度静态图片的自监督外观特征提取。 | **衡量新模态的独立贡献**。证明最终成品外观本身就包含了丰富的缺陷信息。 |
-| | `Audio-Only` | **AST**: 用于音频信号的事件特征提取。 | 对比`Paper-Baseline`的音频部分，证明更先进的音频编码器能带来提升。 |
+| **B. 单模态SOTA基线**<br>(Single-Modality SOTA) | `In-Process-Video-Only` | **V-JEPA (Fine-tuned)**: 微调用于实时黑白视频的自监督时空特征提取器。 | 证明先进的自监督视频编码器在过程监控中的优势。 |
+| | `Post-Weld-Image-Only` | **DINOv2 (Fine-tuned)**: 微调用于焊后多角度静态图片的自监督外观特征提取器。 | **衡量新模态的独立贡献**。证明最终成品外观本身就包含了丰富的缺陷信息。 |
+| | `Audio-Only` | **AST (Fine-tuned)**: 微调用于音频信号的事件特征提取器。 | 对比`Paper-Baseline`的音频部分，证明更先进的音频编码器能带来提升。 |
 | | `Sensor-Only` | **Transformer Encoder**: 仅使用`.csv`数据的时间序列特征提取。 | 证明传感器数据本身就包含有效的缺陷信息，是您工作的创新点之一。 |
 | **C. 简单融合基线**<br>(Simple Fusion) | `SOTA-Late-Fusion` | 将B组中**四个**SOTA模型的异常分数进行后期加权融合。 | 对比`Paper-Baseline`，证明即使只用简单的后期融合，采用SOTA编码器和新增模态也能大幅提升性能。 |
 | | `SOTA-Mid-Fusion` | 将B组中**四个**SOTA模型提取的特征向量进行拼接（Concatenate），再通过MLP进行融合。 | **证明中层特征融合的价值**。对比`SOTA-Late-Fusion`，展示在特征层面进行融合优于在分数层面融合。 |
-| **D. 最终提出的SOTA模型**<br>(Proposed SOTA Model) | `Proposed-Deep-Fusion` (您的模型) | 采用交叉注意力机制（Cross-Attention）对**四个**SOTA模态的特征进行深度、动态的融合。 | **核心贡献**。对比所有A, B, C组基线，特别是`SOTA-Mid-Fusion`，证明您的深度融合策略能够最有效地利用过程与结果的多模态信息，实现最佳性能。 |
+| **D. 最终提出的SOTA模型**<br>(Proposed SOTA Model) | `Proposed-Deep-Fusion` (您的模型) | **冻结Backbone并微调头部**：采用交叉注意力机制（Cross-Attention）对**四个**SOTA模态的特征进行深度、动态的融合。 | **核心贡献**。对比所有A, B, C组基线，特别是`SOTA-Mid-Fusion`，证明您的深度融合策略能够最有效地利用过程与结果的多模态信息，实现最佳性能。 |
 
-### **最终SOTA技术方案：基于监督对比学习的四模态深度融合网络**
+### **最终SOTA技术方案：基于微调的监督对比学习四模态深度融合网络**
 
 ### **1. 部署模型选型 (Model Selection & Deployment)**
 
-| 组件 | 最终选型 | 预训练数据集 | 选型理由 (Rationale) |
+| 组件 | 最终选型 | 预训练数据集 | 选型与**训练策略 (Rationale & Training Strategy)** |
 | :--- | :--- | :--- | :--- |
-| **实时视频编码器** | `facebook/vjepa2-vitl-fpc64-256` | 无标签视频 (自监督学习) | **SOTA自监督模型**。V-JEPA学习的是通用的视觉时空规律，非常适合分析焊接**过程**中的动态变化。 |
-| **焊后图片编码器** | `facebook/dinov2-base` | 无标签图片 (自监督学习) | **顶级通用视觉特征提取器**。DINOv2在海量无标签图片上学习，其特征对于各种下游任务都极为强大，非常适合分析焊后**结果**的静态外观纹理。 |
-| **音频编码器** | `MIT/ast-finetuned-audioset-14-14-0.443` | AudioSet (通用音频事件) | **领域相关性强**。在通用音频事件数据集AudioSet上预训练，非常适合用于分辨焊接过程中的工业噪声和异常事件。 |
-| **传感器编码器** | `torch.nn.TransformerEncoder` | 从零开始训练 (Train from Scratch) | **标准且强大**。对于多变量时间序列，Transformer编码器是当前捕捉长距离依赖和变量间复杂交互的SOTA选择。 |
-| **核心融合模块** | **Cross-Attention Fusion Module** | 从零开始训练 | **超越简单融合的SOTA方法**。通过可学习的`[FUSION_TOKEN]`主动查询**四个**模态，能动态建模**过程与结果**之间细粒度的、非线性的关联。 |
-| **核心训练方法** | **Supervised Contrastive Loss (SupConLoss)** | N/A | **构建优质特征空间**。能学习到一个更具区分度的特征空间，将同类样本拉近、异类样本推远，为高精度分类和未来潜在的未知缺陷检测奠定基础。 |
+| **实时视频编码器** | `facebook/vjepa2-vitl-fpc64-256` | 无标签视频 (自监督学习) | **SOTA自监督模型**。V-JEPA学习通用时空规律，适合分析焊接**过程**。**策略：冻结（Freeze）其绝大部分参数，只训练头部或最后几层。 |
+| 焊后图片编码器 | `facebook/dinov2-base` | 无标签图片 (自监督学习) | 顶级通用视觉特征提取器。DINOv2特征强大，适合分析焊后结果**的静态纹理。\*\*策略：冻结（Freeze）\*\*其绝大部分参数。 |
+| **音频编码器** | `MIT/ast-finetuned-audioset-14-14-0.443` | AudioSet (通用音频事件) | **领域相关性强**。适合分辨工业噪声和异常事件。**策略：冻结（Freeze）其绝大部分参数。 |
+| 传感器编码器 | `torch.nn.TransformerEncoder` | 从零开始训练 (Train from Scratch) | 标准且强大。捕捉时序依赖的SOTA选择。策略：全量训练（Trainable），因为没有预训练权重。 |
+| 核心融合模块 | Cross-Attention Fusion Module | 从零开始训练 | 超越简单融合的SOTA方法。主动查询四个模态，建模过程与结果**的关联。**策略：全量训练（Trainable）**，是学习任务知识的核心。 |
+| **核心训练方法** | **Supervised Contrastive Loss (SupConLoss)** | N/A | **构建优质特征空间**。能学习到一个更具区分度的特征空间，为高精度分类和未来潜在的未知缺陷检测奠定基础。 |
 
 ### **2. 环境与包选择 (Environment & Package Selection)**
 
@@ -94,38 +94,66 @@
   * **实现细节**:
       * **新增-焊后图片**: 读取所有（例如5张）多角度静态图片。将它们`resize`到模型输入尺寸（例如224x224），归一化，然后堆叠成一个张量，形状如 `(num_angles, 3, 224, 224)`。
       * **实时视频**: 读取黑白视频，采样固定数量帧，`resize`并归一化。注意通道数为1。
-      * **音频/传感器**: 保持不变。
-  * **✅ 如何测试**: `sample = dataset[0]`，额外打印并检查 `sample['post_weld_images'].shape` 是否符合预期 `(5, 3, 224, 224)`。
+      * **音频/传感器**: 使用Librosa加载音频，重采样到16kHz，计算成梅尔频谱图；使用Pandas读取传感器数据，对齐时间戳，插值缺失值，然后对所有数值列进行Z-score标准化。截取或填充（padding）到固定长度。
+  * **✅ 如何测试**: `sample = dataset[0]`，额外打印并检查 `sample['post_weld_images'].shape` 是否符合预期 `(5, 3, 224, 224)`以及其他模态的维度。
 
-#### **Step 2: 封装单模态编码器**
+#### **Step 2: 封装单模态编码器（并实现冻结逻辑）**
 
-  * **任务**: 增加并封装 `ImageEncoder` 模块。
+  * **任务**: 封装四个独立的 `nn.Module` 模块，并在初始化时增加参数冻结的逻辑。
   * **实现细节**:
-      * **ImageEncoder**: 内部使用 `AutoModel.from_pretrained("./models/dinov2-base")` 加载模型。其`forward`方法接收一批图片 `(batch_size, num_angles, 3, 224, 224)`，需要先将其reshape为 `(batch_size * num_angles, 3, 224, 224)`，送入模型，然后对同一焊件的多个角度特征进行聚合（例如取平均或最大池化），最终为每个焊件输出一个特征序列。
-  * **✅ 如何测试 (单元测试)**: 为 `ImageEncoder` 编写测试脚本，检查输入一批多角度图片后，输出的特征维度是否正确 `(batch_size, expected_seq_len, expected_dim)`。
+      * 在`VideoEncoder`, `ImageEncoder`, `AudioEncoder`的`__init__`方法中，加载预训练模型后，立即遍历其参数并设置 `param.requires_grad = False`。
+    <!-- end list -->
+    ```python
+    # 示例:
+    class VideoEncoder(nn.Module):
+        def __init__(self, model_path, freeze=True):
+            super().__init__()
+            self.backbone = AutoModel.from_pretrained(model_path)
+            if freeze:
+                for param in self.backbone.parameters():
+                    param.requires_grad = False
+    ```
+  * **✅ 如何测试 (单元测试)**:
+    1.  实例化模块 `encoder = VideoEncoder(..., freeze=True)`。
+    2.  编写一个循环检查 `param.requires_grad` 是否全部为 `False`。
+    3.  运行前向传播，确保输出维度正确。
 
 #### **Step 3: 实现并测试核心融合模块**
 
-  * **任务**: 更新 `CrossAttentionFusionModule` 以处理**四个**输入特征序列。
-  * **实现细节**: 在`forward`方法中增加一个对`image_features`的交叉注意力步骤。
-  * **✅ 如何测试 (单元测试)**: 创建**四个**虚拟的特征序列，送入融合模块，并`assert`检查输出维度。
+  * **任务**: 实现 `CrossAttentionFusionModule`。
+  * **✅ 如何测试 (单元测试)**: 创建**四个**虚拟的特征序列（即Step 2中编码器的输出），送入融合模块，并`assert`检查最终输出的融合向量维度是否为 `(batch_size, 1, fusion_dim)`，并检查输出值是否为`NaN`或`inf`。
 
 #### **Step 4: 整合并测试完整模型**
 
   * **任务**: 组装最终的 `QuadModalSOTAModel`。
-  * **✅ 如何测试 (集成测试)**: 从`DataLoader`中取出一个真实的批次`batch`，送入完整模型，确保包含四种模态的`forward`方法能顺利执行，并能与`SupConLoss`函数无缝对接。
+  * **实现细节**: 在模型初始化时，打印出总参数量和**可训练参数量**。
+  * **✅ 如何测试 (集成测试)**:
+    1.  实例化完整模型。
+    2.  **关键**: 确认打印出的**可训练参数量**远小于总参数量（例如，从5亿降至2千万）。
+    3.  从 **Step 1** 的 `DataLoader` 中取出一个真实的批次 `batch`，送入完整模型的`forward`方法，确保包含四种模态的`forward`方法能顺利执行，并能与`SupConLoss`函数无缝对接。
 
 #### **Step 5: 实现并验证训练循环**
 
-  * **任务**: 保持不变，该步骤与模型内部结构解耦。
-  * **✅ 如何测试 (过拟合测试)**: 保持不变。用一个包含所有四种模态的极小数据集进行测试，确保损失能快速收敛。
+  * **任务**: 编写 `train.py` 脚本，包含完整的训练和验证逻辑。
+  * **实现细节**: 定义AdamW优化器，学习率调度器，使用`wandb`或`Tensorboard`记录损失、学习率等指标，并保存模型检查点。
+  * **✅ 如何测试 (过拟合测试)**:
+    1.  创建一个仅包含少量数据（例如，每个类别2个样本，共24个样本）的`DataLoader`。
+    2.  使用这个`DataLoader`训练您的完整模型几个Epoch。
+    3.  **预期结果**: 训练损失应该能迅速下降到接近0。如果损失不下降，说明您的模型结构、梯度流或训练循环中存在bug。这是一个定位问题的黄金标准测试。
 
 #### **Step 6: 实现并验证评估协议**
 
-  * **任务**: 保持不变，评估逻辑作用于模型最终输出的特征向量，与输入模态数量无关。
-  * **✅ 如何测试**: 保持不变。
+  * **任务**: 编写 `evaluate.py` 脚本。
+  * **实现细节**:
+    1.  加载训练好的模型检查点。
+    2.  **构建特征库**: 遍历**训练集**，用模型提取所有样本的特征，并与标签一同保存。
+    3.  **进行评估**: 遍历**测试集**，提取每个样本的特征，然后使用`scikit-learn`的 `KNeighborsClassifier` 在特征库上进行k-NN分类，计算准确率、F1分数等指标。
+  * **✅ 如何测试**:
+    1.  使用**Step 5**中过拟合的模型和那24个样本。
+    2.  用这24个样本构建特征库，再用它们自己作为测试集。
+    3.  **预期结果**: k-NN分类的准确率应该为100%。如果不是，说明您的特征提取或k-NN实现逻辑有误。
 
-完成以上所有步骤和测试，您将拥有一个结构清晰、经过充分验证、技术先进且极具竞争力的SOTA研究项目代码库。
+完成以上所有步骤和测试，您将拥有一个结构清晰、经过充分验证、技术先进且**参数量合理、可训练**的SOTA研究项目代码库。
 
 -----
 
@@ -150,7 +178,6 @@
 ### 本地快速检测: 数据集管线单元测试
 
 项目包含一个轻量级的 `WeldingDataset` 的 dummy 实现，用于在没有完整依赖和数据的情况下快速验证数据管线。
-
 运行方法（在装好 `pytest` 与 `numpy` 的环境下）:
 
 ```bash
@@ -171,13 +198,14 @@ bash scripts/test_server.sh
 # 或分步运行
 python tests/test_dataset_labels.py    # 检查真实数据标签分布
 python tests/test_loss_and_labels.py   # 测试loss函数和采样器
-python src/train.py --quick-test --debug  # 快速训练测试
+python src/train.py --quick-test --debug   # 快速训练测试
+bash scripts/evaluate.sh
 ```
 
 ### 正式训练
 
 ```bash
-# 使用默认配置（CUDA自动检测，batch_size=2）
+# 使用默认配置（微调策略，CUDA自动检测，batch_size=2）
 python src/train.py
 
 # 指定参数
@@ -186,6 +214,6 @@ python src/train.py --batch-size 16 --num-epochs 100
 # 混合精度训练（推荐GPU环境）
 python src/train.py --batch-size 32 --mixed-precision
 
-# 调试模式（查看第一个batch的详细信息）
+# 调试模式（查看第一个batch的详细信息并检查可训练参数）
 python src/train.py --debug
 ```

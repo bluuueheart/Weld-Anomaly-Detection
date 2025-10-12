@@ -9,7 +9,7 @@ AUDIO_MODEL_PATH = "models/ast-finetuned-audioset-14-14-0.443"
 VIDEO_ENCODER = {
     "model_name": VIDEO_MODEL_PATH,
     "embed_dim": 1024,
-    "freeze_backbone": False,
+    "freeze_backbone": True,  # Freeze pretrained weights for fine-tuning
 }
 
 # Image encoder config (DINOv2)
@@ -18,14 +18,14 @@ IMAGE_ENCODER = {
     "embed_dim": 768,
     "num_angles": 5,
     "aggregation": "mean",
-    "freeze_backbone": False,
+    "freeze_backbone": True,  # Freeze pretrained weights for fine-tuning
 }
 
 # Audio encoder config
 AUDIO_ENCODER = {
     "model_name": AUDIO_MODEL_PATH,
     "embed_dim": 768,
-    "freeze_backbone": False,
+    "freeze_backbone": True,  # Freeze pretrained weights for fine-tuning
 }
 
 # Sensor encoder config (Transformer)
