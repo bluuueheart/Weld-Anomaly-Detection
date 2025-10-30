@@ -7,7 +7,7 @@ echo "Evaluating Quad-Modal SOTA Model"
 echo "=========================================="
 
 # Default parameters
-CHECKPOINT="/root/autodl-tmp/outputs/checkpoints/best.pth"
+CHECKPOINT="/root/autodl-tmp/outputs/checkpoints/best_model.pth"
 K=5
 METRIC="cosine"
 BATCH_SIZE=16

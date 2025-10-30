@@ -542,6 +542,35 @@ bash scripts/test_fusion.sh
 
 ## 5. 训练模型
 
+### 5.0 重要：检查数据集划分
+
+**首次训练前必须执行**，确保训练集包含所有类别：
+
+```bash
+# 1. 检查当前数据集分布
+python scripts/check_dataset_distribution.py
+
+# 如果训练集只有单一类别（例如只有 Good），则需要重新划分：
+# 2. 重新划分数据集（80/20 训练/测试比例）
+python scripts/resplit_dataset.py
+
+# 3. 验证划分结果
+python scripts/check_dataset_distribution.py
+```
+
+**预期结果**:
+```
+训练集 (TRAIN):
+  总样本数: 3231
+  类别数: 12  ✅ 包含所有类别
+  
+测试集 (TEST):
+  总样本数: 809
+  类别数: 12
+```
+
+如果训练集只有 1 个类别，SupConLoss 将无法工作（loss 恒定）。
+
 ### 5.1 配置训练参数
 
 编辑 `configs/train_config.py`:
@@ -592,9 +621,13 @@ bash scripts/train.sh
 # 直接运行（默认使用 configs/train_config.py 中的 device，优先使用 CUDA）
 python src/train.py
 
+# 启用调试模式（查看批次标签分布、特征统计等）
+python src/train.py --debug
+
 # 指定参数示例：
 python src/train.py --batch-size 8 --device cuda --mixed-precision
 python src/train.py --debug
+
 # 快速 smoke 测试（使用短期小批量并启用 dummy，便于快速验证）
 python src/train.py --quick-test
 
@@ -602,10 +635,26 @@ python src/train.py --quick-test
 python src/train.py --use-dummy --num-epochs 1
 
 # 或使用 nohup 后台运行（Linux）
-=nohup bash scripts/train.sh > training.log 2>&1 &
+nohup bash scripts/train.sh > training.log 2>&1 &
 
 # 查看训练日志
 tail -f training.log
+```
+
+**诊断训练问题:**
+
+如果训练 loss 不下降，运行以下诊断脚本：
+
+```bash
+# 1. 检查采样器是否正确混合类别
+python scripts/check_sampler.py
+
+# 2. 使用调试模式训练（查看详细信息）
+python src/train.py --debug
+
+# 预期在调试模式下看到：
+# [DEBUG] Batch 0 labels - unique: [0, 1, 2, ...], counts: [3, 2, 4, ...]
+# [DEBUG] ✅ Good! Batch contains X different classes
 ```
 
 注意：默认输出目录已配置为 `/root/autodl-tmp/outputs`（在 `configs/train_config.py` 中设置）。
@@ -673,8 +722,8 @@ Epoch 2/100
 ```
 outputs/
 ├── checkpoints/
-│   ├── latest.pth         # 最新模型
-│   ├── best.pth           # 最佳模型 (验证损失最低)
+│   ├── latest_model.pth         # 最新模型
+│   ├── best_model.pth           # 最佳模型 (验证损失最低)
 │   ├── epoch_005.pth      # 第5个epoch
 │   ├── epoch_010.pth      # 第10个epoch
 │   └── ...
@@ -729,8 +778,8 @@ tensorboard --port 6007 --logdir /root/autodl-tmp/outputs/logs
 
 | 输出类型 | 文件路径 | 内容 |
 |---------|---------|------|
-| 最新模型 | `/root/autodl-tmp/outputs/checkpoints/latest.pth` | 最后一个epoch的模型状态 |
-| 最佳模型 | `/root/autodl-tmp/outputs/checkpoints/best.pth` | 验证损失最低的模型 |
+| 最新模型 | `/root/autodl-tmp/outputs/checkpoints/latest_model.pth` | 最后一个epoch的模型状态 |
+| 最佳模型 | `/root/autodl-tmp/outputs/checkpoints/best_model.pth` | 验证损失最低的模型 |
 | 周期检查点 | `/root/autodl-tmp/outputs/checkpoints/epoch_XXX.pth` | 定期保存的模型 |
 | 训练日志 | `/root/autodl-tmp/outputs/logs/training_log.json` | 完整训练历史(损失、学习率等) |
 

@@ -5,7 +5,11 @@ for older code and tests.
 """
 
 # Data paths
-DATA_ROOT = "Data"
+# Full dataset path on AutoDL server
+DATA_ROOT = "/root/autodl-tmp/Intel_Robotic_Welding_Multimodal_Dataset/raid/intel_robotic_welding_dataset"
+
+# Manifest file for train/test split
+MANIFEST_PATH = "configs/manifest.csv"
 
 # Video parameters
 VIDEO_NUM_FRAMES = 32

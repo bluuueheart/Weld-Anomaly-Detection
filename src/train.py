@@ -8,6 +8,7 @@ import os
 import sys
 import time
 import json
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 from collections import Counter
@@ -25,7 +26,10 @@ from src.models import create_quadmodal_model
 from src.dataset import WeldingDataset
 from src.losses import SupConLoss, CombinedLoss
 from src.samplers import StratifiedBatchSampler
-from configs.dataset_config import *
+from configs.dataset_config import (
+    DATA_ROOT, MANIFEST_PATH, VIDEO_LENGTH, AUDIO_SAMPLE_RATE, AUDIO_DURATION,
+    SENSOR_LENGTH, IMAGE_SIZE, IMAGE_NUM_ANGLES
+)
 from configs.model_config import *
 from configs.train_config import *
 
@@ -114,6 +118,7 @@ class Trainer:
         # Training dataset
         train_dataset = WeldingDataset(
             data_root=DATA_ROOT,
+            manifest_path=MANIFEST_PATH,
             split='train',  # Use train split from manifest.csv
             video_length=VIDEO_LENGTH,
             audio_sample_rate=AUDIO_SAMPLE_RATE,
@@ -161,6 +166,7 @@ class Trainer:
         # Validation dataset (use test split)
         val_dataset = WeldingDataset(
             data_root=DATA_ROOT,
+            manifest_path=MANIFEST_PATH,
             split='test',  # Use test split from manifest.csv
             video_length=VIDEO_LENGTH,
             audio_sample_rate=AUDIO_SAMPLE_RATE,
@@ -189,6 +195,34 @@ class Trainer:
         print(f"  Train batches: {len(self.train_loader)}")
         print(f"  Val batches: {len(self.val_loader)}")
         print()
+    
+    def _mixup_features(self, features, labels, alpha=0.2):
+        """
+        Apply MixUp augmentation on feature vectors.
+        
+        Args:
+            features: (B, D) feature tensor
+            labels: (B,) label tensor
+            alpha: Beta distribution parameter
+            
+        Returns:
+            mixed_features: (B, D) mixed features
+            labels_a: (B,) first set of labels
+            labels_b: (B,) second set of labels
+            lam: mixing coefficient
+        """
+        if alpha > 0:
+            lam = np.random.beta(alpha, alpha)
+        else:
+            lam = 1.0
+        
+        batch_size = features.size(0)
+        index = torch.randperm(batch_size).to(features.device)
+        
+        mixed_features = lam * features + (1 - lam) * features[index, :]
+        labels_a, labels_b = labels, labels[index]
+        
+        return mixed_features, labels_a, labels_b, lam
         
     def _setup_optimizer(self):
         """Setup optimizer and scheduler."""
@@ -228,32 +262,48 @@ class Trainer:
         print(f"  Learning rate: {lr}")
         print(f"  Weight decay: {weight_decay}")
         
-        # Setup scheduler
+        # Setup scheduler with warmup support
         scheduler_name = self.config.get("lr_scheduler", "cosine").lower()
+        warmup_epochs = self.config.get("warmup_epochs", 0)
         
-        if scheduler_name == "cosine":
+        if scheduler_name in ["cosine", "cosine_warmup"]:
+            # CosineAnnealingLR for main training
             self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
-                T_max=self.config["num_epochs"],
+                T_max=self.config["num_epochs"] - warmup_epochs,
                 eta_min=self.config.get("min_lr", 1e-6),
             )
+            
+            # Warmup scheduler
+            if warmup_epochs > 0 and scheduler_name == "cosine_warmup":
+                self.warmup_epochs = warmup_epochs
+                self.warmup_start_lr = self.config.get("warmup_start_lr", 1e-7)
+                self.base_lr = lr
+                print(f"  Scheduler: cosine with {warmup_epochs}-epoch warmup")
+                print(f"  Warmup start LR: {self.warmup_start_lr:.2e}")
+            else:
+                self.warmup_epochs = 0
+                print(f"  Scheduler: cosine")
         elif scheduler_name == "step":
+            self.warmup_epochs = 0
             self.scheduler = torch.optim.lr_scheduler.StepLR(
                 self.optimizer,
                 **SCHEDULER_CONFIGS["step"]
             )
+            print(f"  Scheduler: step")
         elif scheduler_name == "plateau":
+            self.warmup_epochs = 0
             self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 self.optimizer,
                 **SCHEDULER_CONFIGS["plateau"]
             )
+            print(f"  Scheduler: plateau")
         elif scheduler_name == "none":
+            self.warmup_epochs = 0
             self.scheduler = None
         else:
             raise ValueError(f"Unknown scheduler: {scheduler_name}")
         
-        if self.scheduler:
-            print(f"  Scheduler: {scheduler_name}")
         print()
         
     def _setup_loss(self):
@@ -304,7 +354,14 @@ class Trainer:
                     lbls = batch.get('label')
                     if isinstance(lbls, torch.Tensor):
                         unique, counts = torch.unique(lbls, return_counts=True)
-                        print(f"[DEBUG] Batch labels - unique: {unique.tolist()}, counts: {counts.tolist()}")
+                        print(f"[DEBUG] Batch {batch_idx} labels - unique: {unique.tolist()}, counts: {counts.tolist()}")
+                        
+                        # Check if all samples are same class (critical bug indicator)
+                        if len(unique) == 1:
+                            print(f"[DEBUG] ⚠️  WARNING: ALL {len(lbls)} samples in batch are from class {unique[0].item()}!")
+                            print(f"[DEBUG] ⚠️  StratifiedBatchSampler may be broken - no class mixing!")
+                        else:
+                            print(f"[DEBUG] ✅ Good! Batch contains {len(unique)} different classes")
                     else:
                         print(f"[DEBUG] Labels (non-tensor): {lbls}")
                 except Exception as e:
@@ -316,6 +373,16 @@ class Trainer:
                     features = self.model(batch)
             else:
                 features = self.model(batch)
+            
+            # Apply MixUp augmentation on features (if enabled)
+            if self.config.get("use_mixup", False) and self.model.training:
+                features, labels_a, labels_b, lam = self._mixup_features(
+                    features, batch["label"], alpha=self.config.get("mixup_alpha", 0.2)
+                )
+                # For SupCon with mixup, use mixed labels
+                mixed_labels = labels_a  # Primary label for contrastive
+            else:
+                mixed_labels = batch["label"]
 
             # Debug: inspect feature statistics for first batch
             if getattr(self, 'debug', False) and batch_idx == 0:
@@ -355,7 +422,7 @@ class Trainer:
                     print(f"[DEBUG] Failed to inspect features: {e}")
 
             # Compute loss
-            loss_output = self.criterion(features, batch["label"])
+            loss_output = self.criterion(features, mixed_labels)
             
             # Handle both scalar and dict returns
             if isinstance(loss_output, dict):
@@ -364,6 +431,23 @@ class Trainer:
             else:
                 loss = loss_output
                 loss_value = loss.item()
+            
+            # DEBUG: Check loss computation on first batch
+            if getattr(self, 'debug', False) and batch_idx == 0 and epoch == 0:
+                labels = batch["label"]
+                print(f"[DEBUG] Loss computation:")
+                print(f"        Features shape: {features.shape}, requires_grad: {features.requires_grad}")
+                print(f"        Loss value: {loss_value:.6f}, requires_grad: {loss.requires_grad}")
+                
+                # Count positive pairs
+                num_pos_pairs = 0
+                for i in range(len(labels)):
+                    for j in range(i+1, len(labels)):
+                        if labels[i] == labels[j]:
+                            num_pos_pairs += 1
+                print(f"        Positive pairs in batch: {num_pos_pairs}")
+                if num_pos_pairs == 0:
+                    print(f"        ⚠️  WARNING: NO POSITIVE PAIRS! SupConLoss gradient will be zero!")
             
             # Debug: inspect loss computation for first batch
             if getattr(self, 'debug', False) and batch_idx == 0:
@@ -413,6 +497,22 @@ class Trainer:
                 self.scaler.update()
             else:
                 loss.backward()
+                
+                # DEBUG: Check gradients on first batch
+                if getattr(self, 'debug', False) and batch_idx == 0 and epoch == 0:
+                    print(f"[DEBUG] Gradient check after backward:")
+                    total_grad_norm = 0.0
+                    params_with_grad = 0
+                    for name, param in self.model.named_parameters():
+                        if param.requires_grad and param.grad is not None:
+                            params_with_grad += 1
+                            total_grad_norm += param.grad.norm().item() ** 2
+                    total_grad_norm = total_grad_norm ** 0.5
+                    print(f"        Params with grad: {params_with_grad}")
+                    print(f"        Total grad norm: {total_grad_norm:.6f}")
+                    if params_with_grad == 0:
+                        print(f"        ⚠️  WARNING: NO GRADIENTS! Model may be fully frozen or graph disconnected")
+                
                 if self.config.get("gradient_clip", 0) > 0:
                     nn.utils.clip_grad_norm_(
                         self.model.parameters(),
@@ -484,20 +584,15 @@ class Trainer:
         if self.scheduler:
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
         
-        # Save latest
-        latest_path = self.checkpoint_dir / "latest.pth"
+        # Save latest (overwrite)
+        latest_path = self.checkpoint_dir / "latest_model.pth"
         torch.save(checkpoint, latest_path)
-        
-        # Save best
+
+        # Save best (overwrite when current model is the new best)
         if is_best:
-            best_path = self.checkpoint_dir / "best.pth"
+            best_path = self.checkpoint_dir / "best_model.pth"
             torch.save(checkpoint, best_path)
             print(f"  ✅ Saved best model (epoch {epoch})")
-        
-        # Save periodic
-        if (epoch + 1) % self.config.get("save_interval", 5) == 0:
-            epoch_path = self.checkpoint_dir / f"epoch_{epoch:03d}.pth"
-            torch.save(checkpoint, epoch_path)
     
     def train(self):
         """Main training loop."""
@@ -511,6 +606,15 @@ class Trainer:
         for epoch in range(self.config["num_epochs"]):
             self.current_epoch = epoch
             
+            # Warmup learning rate adjustment
+            if hasattr(self, 'warmup_epochs') and self.warmup_epochs > 0 and epoch < self.warmup_epochs:
+                # Linear warmup from warmup_start_lr to base_lr
+                warmup_progress = (epoch + 1) / self.warmup_epochs
+                current_lr = self.warmup_start_lr + (self.base_lr - self.warmup_start_lr) * warmup_progress
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] = current_lr
+                print(f"\n[WARMUP] Epoch {epoch + 1}/{self.warmup_epochs}, LR: {current_lr:.2e}")
+            
             print(f"Epoch {epoch + 1}/{self.config['num_epochs']}")
             print("-" * 70)
             
@@ -520,6 +624,9 @@ class Trainer:
             
             # Print training loss
             print(f"  Training Loss: {train_metrics['loss']:.4f}")
+            
+            # Save logs incrementally (every epoch)
+            self._save_logs()
             
             # Validate
             if (epoch + 1) % self.config.get("val_interval", 1) == 0:
@@ -546,12 +653,14 @@ class Trainer:
                         print(f"  Best val loss: {self.best_metric:.4f}")
                         break
             
-            # Update scheduler
+            # Update scheduler (after warmup phase)
             if self.scheduler:
-                if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    self.scheduler.step(val_metrics["loss"])
-                else:
-                    self.scheduler.step()
+                # Skip scheduler updates during warmup
+                if not (hasattr(self, 'warmup_epochs') and self.warmup_epochs > 0 and epoch < self.warmup_epochs):
+                    if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                        self.scheduler.step(val_metrics["loss"])
+                    else:
+                        self.scheduler.step()
             
             print(f"  Epoch time: {train_metrics['time']:.1f}s")
             print()

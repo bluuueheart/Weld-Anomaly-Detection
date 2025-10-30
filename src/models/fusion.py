@@ -59,11 +59,23 @@ class CrossAttentionFusionModule(nn.Module):
         )
         nn.init.trunc_normal_(self.fusion_tokens, std=0.02)
         
-        # Project each modality to hidden_dim (for key/value)
-        self.video_proj = nn.Linear(video_dim, hidden_dim)
-        self.image_proj = nn.Linear(image_dim, hidden_dim)
-        self.audio_proj = nn.Linear(audio_dim, hidden_dim)
-        self.sensor_proj = nn.Linear(sensor_dim, hidden_dim)
+        # Project each modality to hidden_dim (for key/value) with moderate dropout
+        self.video_proj = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(video_dim, hidden_dim),
+        )
+        self.image_proj = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(image_dim, hidden_dim),
+        )
+        self.audio_proj = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(audio_dim, hidden_dim),
+        )
+        self.sensor_proj = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(sensor_dim, hidden_dim),
+        )
         
         # Cross-attention layers for each modality
         self.video_cross_attn = nn.MultiheadAttention(
@@ -97,7 +109,7 @@ class CrossAttentionFusionModule(nn.Module):
         self.audio_norm = nn.LayerNorm(hidden_dim)
         self.sensor_norm = nn.LayerNorm(hidden_dim)
         
-        # Aggregation: concat all attended features
+        # Aggregation: concat all attended features with moderate dropout
         self.aggregation = nn.Sequential(
             nn.Linear(hidden_dim * num_fusion_tokens * 4, hidden_dim * 2),
             nn.LayerNorm(hidden_dim * 2),
@@ -106,8 +118,11 @@ class CrossAttentionFusionModule(nn.Module):
             nn.Linear(hidden_dim * 2, hidden_dim),
         )
         
-        # Final projection layer
-        self.output_proj = nn.Linear(hidden_dim, hidden_dim)
+        # Final projection layer with moderate dropout
+        self.output_proj = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
         
     def forward(
         self,

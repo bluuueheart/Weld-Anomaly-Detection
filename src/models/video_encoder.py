@@ -71,11 +71,14 @@ class VideoEncoder(nn.Module):
         # Get model output dimension
         self.model_dim = self.model.config.hidden_size if hasattr(self.model.config, 'hidden_size') else 1024
         
-        # Projection layer if needed
+        # Projection layer with moderate dropout (trainable even when backbone frozen)
         if self.model_dim != embed_dim:
-            self.projection = nn.Linear(self.model_dim, embed_dim)
+            self.projection = nn.Sequential(
+                nn.Dropout(p=0.2),  # Moderate dropout
+                nn.Linear(self.model_dim, embed_dim),
+            )
         else:
-            self.projection = nn.Identity()
+            self.projection = nn.Dropout(p=0.2)  # Dropout for Identity case
 
         # Heuristic: inspect backbone for Conv3d vs Conv2d to decide expected
         # input layout. If a Conv3d is present, assume the backbone expects

@@ -3,28 +3,33 @@
 # Training hyperparameters
 TRAIN_CONFIG = {
     # Optimization
-    "batch_size": 16,
+    "batch_size": 32,  # Increased for SupConLoss (need more positive pairs per batch)
     "num_epochs": 100,
-    "learning_rate": 1e-4,
-    "weight_decay": 1e-4,
+    "learning_rate": 5e-5,  # Restored from 3e-5 for faster early convergence
+    "weight_decay": 1e-2,  # Further increased to 0.01 (very strong L2)
     "optimizer": "adamw",  # "adam", "adamw", "sgd"
     
-    # Learning rate schedule
-    "lr_scheduler": "cosine",  # "cosine", "step", "plateau", "none"
-    "warmup_epochs": 5,
-    "min_lr": 1e-6,
+    # Learning rate schedule (with linear warmup)
+    "lr_scheduler": "cosine_warmup",  # "cosine", "cosine_warmup", "step", "plateau", "none"
+    "warmup_epochs": 5,  # Reduced from 10 (faster convergence to good solution)
+    "warmup_start_lr": 1e-6,  # Higher start LR
+    "min_lr": 1e-7,  # Lower floor to allow aggressive decay
     
     # Loss
     "loss_type": "supcon",  # "supcon", "combined"
-    "temperature": 0.07,
+    "temperature": 0.10,  # Increased from 0.07 (smoother similarity, less overfitting)
     "use_ce": False,
     "ce_weight": 0.0,
     "supcon_weight": 1.0,
     
+    # Regularization via data augmentation
+    "use_mixup": True,  # Feature-level mixup
+    "mixup_alpha": 0.2,  # Beta distribution param (0.2 = conservative mixing)
+    
     # Training strategy
     "freeze_encoders_epochs": 0,  # Freeze encoders for first N epochs (0 = no freeze)
-    "gradient_clip": 1.0,  # Gradient clipping norm (0 = no clip)
-    "early_stopping_patience": 10,  # Stop if val loss doesn't improve for N epochs (0 = no early stopping)
+    "gradient_clip": 0.5,  # Reduced from 1.0 (tighter gradient control)
+    "early_stopping_patience": 8,  # Aggressive early stop (catch best at epoch 4-10)
     
     # Data
     "num_workers": 4,

@@ -132,41 +132,41 @@ class StratifiedBatchSampler(Sampler):
             random.shuffle(shuffled)
             shuffled_indices[label] = shuffled
         
-        # Create batches with emphasis on forming positive pairs per class
+        # Create batches with mixed classes for SupCon
         batches = []
-        all_labels = list(shuffled_indices.keys())
+        all_labels = sorted(shuffled_indices.keys())
+        num_classes = len(all_labels)
+        
+        # Calculate samples per class per batch for balance
+        if num_classes > 0:
+            samples_per_class = max(2, self.batch_size // num_classes)
         
         while any(len(v) > 0 for v in shuffled_indices.values()):
             batch = []
             random.shuffle(all_labels)
-
-            # First pass: try to allocate pairs per class (SupCon friendly)
-            labels_with_pairs = [
-                label for label in all_labels if len(shuffled_indices[label]) >= 2
-            ]
-            random.shuffle(labels_with_pairs)
-
-            for label in labels_with_pairs:
+            
+            # Try to get samples_per_class from each class
+            for label in all_labels:
                 if len(batch) >= self.batch_size:
                     break
-                needed = self.batch_size - len(batch)
-                take = min(2, len(shuffled_indices[label]), needed)
-                for _ in range(take):
-                    batch.append(shuffled_indices[label].pop(0))
-                if len(batch) >= self.batch_size:
-                    break
-
-            # Second pass: fill any remaining slots with leftover samples
+                
+                available = len(shuffled_indices[label])
+                if available > 0:
+                    # Take min(samples_per_class, available, remaining_space)
+                    take = min(samples_per_class, available, self.batch_size - len(batch))
+                    for _ in range(take):
+                        if shuffled_indices[label]:
+                            batch.append(shuffled_indices[label].pop(0))
+            
+            # If batch is not full, fill with any remaining samples
             if len(batch) < self.batch_size:
                 for label in all_labels:
-                    if len(batch) >= self.batch_size:
-                        break
                     while shuffled_indices[label] and len(batch) < self.batch_size:
                         batch.append(shuffled_indices[label].pop(0))
-
+            
             if not batch:
                 break
-
+            
             if len(batch) == self.batch_size or (not self.drop_last and len(batch) > 0):
                 random.shuffle(batch)
                 batches.append(batch)
@@ -174,7 +174,7 @@ class StratifiedBatchSampler(Sampler):
         # Shuffle batch order
         random.shuffle(batches)
         
-        # Yield batches
+        # Yield batches (batch_sampler expects lists, not individual indices)
         for batch in batches:
             yield batch
     

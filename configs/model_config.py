@@ -35,7 +35,7 @@ SENSOR_ENCODER = {
     "num_heads": 8,
     "num_layers": 4,
     "dim_feedforward": 1024,
-    "dropout": 0.1,
+    "dropout": 0.2,  # Moderate regularization (reduced from 0.4)
 }
 
 # Fusion config (Cross-Attention Fusion Module)
@@ -47,8 +47,9 @@ FUSION = {
     "hidden_dim": 512,
     "num_fusion_tokens": 4,
     "num_heads": 8,
-    "dropout": 0.1,
+    "dropout": 0.2,  # Moderate regularization (reduced from 0.4)
+    "l2_normalize": True,  # L2 normalization for contrastive learning (recommended)
 }
 
 # Output config
-NUM_CLASSES = 6
+NUM_CLASSES = 12  # Updated from 6 to match actual dataset (12 categories)

@@ -65,11 +65,14 @@ class AudioEncoder(nn.Module):
         # Get model output dimension
         self.model_dim = self.model.config.hidden_size if hasattr(self.model.config, 'hidden_size') else 768
         
-        # Projection layer if needed
+        # Projection layer with moderate dropout (trainable even when backbone frozen)
         if self.model_dim != embed_dim:
-            self.projection = nn.Linear(self.model_dim, embed_dim)
+            self.projection = nn.Sequential(
+                nn.Dropout(p=0.2),  # Moderate dropout
+                nn.Linear(self.model_dim, embed_dim),
+            )
         else:
-            self.projection = nn.Identity()
+            self.projection = nn.Dropout(p=0.2)  # Dropout for Identity case
 
         # Detect expected input shape from model config/architecture.
         # AST models typically expect specific mel-spectrogram dimensions.

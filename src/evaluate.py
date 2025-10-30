@@ -30,7 +30,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.models import create_quadmodal_model
 from src.dataset import WeldingDataset
-from configs.dataset_config import *
+from configs.dataset_config import (
+    DATA_ROOT, MANIFEST_PATH, VIDEO_LENGTH, AUDIO_SAMPLE_RATE, AUDIO_DURATION,
+    SENSOR_LENGTH, IMAGE_SIZE, IMAGE_NUM_ANGLES
+)
 from configs.model_config import *
 from configs.train_config import OUTPUT_DIR
 
@@ -225,7 +228,7 @@ def main():
     parser.add_argument(
         "--checkpoint",
         type=str,
-        default="/root/autodl-tmp/outputs/checkpoints/best.pth",
+        default="/root/autodl-tmp/outputs/checkpoints/best_model.pth",
         help="Path to model checkpoint",
     )
     parser.add_argument(
@@ -282,6 +285,7 @@ def main():
     
     train_dataset = WeldingDataset(
         data_root=DATA_ROOT,
+        manifest_path=MANIFEST_PATH,
         split='train',  # Use train split from manifest.csv
         video_length=VIDEO_LENGTH,
         audio_sample_rate=AUDIO_SAMPLE_RATE,
@@ -294,6 +298,7 @@ def main():
     
     test_dataset = WeldingDataset(
         data_root=DATA_ROOT,
+        manifest_path=MANIFEST_PATH,
         split='test',  # Use test split from manifest.csv
         video_length=VIDEO_LENGTH,
         audio_sample_rate=AUDIO_SAMPLE_RATE,

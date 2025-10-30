@@ -132,6 +132,10 @@ class QuadModalSOTAModel(nn.Module):
         # Output dimension
         self.output_dim = fusion_config.get("hidden_dim", 512)
         
+        # Feature normalization layer (helps with contrastive learning)
+        self.feature_norm = nn.LayerNorm(self.output_dim)
+        self.l2_normalize = fusion_config.get("l2_normalize", True)  # L2 normalization for contrastive learning
+        
     def forward(
         self,
         batch: Dict[str, torch.Tensor],
@@ -172,6 +176,15 @@ class QuadModalSOTAModel(nn.Module):
             sensor_features=sensor_features,
             return_attention=return_attention,
         )
+        
+        # Apply feature normalization
+        if not return_attention:
+            # Only normalize features (not attention dict)
+            fused_features = self.feature_norm(fused_features)
+            
+            # L2 normalization for contrastive learning
+            if self.l2_normalize:
+                fused_features = nn.functional.normalize(fused_features, p=2, dim=1)
         
         return fused_features
     

@@ -78,11 +78,14 @@ class ImageEncoder(nn.Module):
         # Get backbone output dimension
         backbone_dim = self.backbone.config.hidden_size
         
-        # Projection layer if needed
+        # Projection layer with moderate dropout (trainable even when backbone frozen)
         if backbone_dim != embed_dim:
-            self.projection = nn.Linear(backbone_dim, embed_dim)
+            self.projection = nn.Sequential(
+                nn.Dropout(p=0.2),  # Moderate dropout
+                nn.Linear(backbone_dim, embed_dim),
+            )
         else:
-            self.projection = nn.Identity()
+            self.projection = nn.Dropout(p=0.2)  # Dropout for Identity case
     
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """Forward pass.

@@ -520,7 +520,7 @@ bash scripts/test_losses.sh
 bash scripts/train.sh
 
 # 从检查点恢复训练
-python src/train.py --resume /root/autodl-tmp/outputs/checkpoints/latest.pth
+python src/train.py --resume /root/autodl-tmp/outputs/checkpoints/latest_model.pth
 ```
 
 ---
@@ -1123,7 +1123,7 @@ TRAIN_CONFIG["early_stopping_patience"] = 0
 ### 评估流程
 
 ```
-加载模型 (best.pth)
+加载模型 (best_model.pth)
     ↓
 提取训练集特征 → (N_train, 512)
     ↓
@@ -1148,7 +1148,7 @@ bash scripts/evaluate.sh
 
 # 等价于
 python src/evaluate.py \
-    --checkpoint /root/autodl-tmp/outputs/checkpoints/best.pth \
+  --checkpoint /root/autodl-tmp/outputs/checkpoints/best_model.pth \
     --k 5 \
     --metric cosine \
     --batch-size 16
@@ -1182,7 +1182,7 @@ bash scripts/evaluate.sh \
 ======================================================================
 LOADING MODEL
 ======================================================================
-  Checkpoint: /root/autodl-tmp/outputs/checkpoints/best.pth
+  Checkpoint: /root/autodl-tmp/outputs/checkpoints/best_model.pth
   Epoch: 45
   Device: cuda
 
@@ -1259,7 +1259,7 @@ EVALUATION COMPLETE
   "train_samples": 576,
   "test_samples": 1732,
   "timestamp": "2025-10-11 23:45:30",
-  "checkpoint": "/root/autodl-tmp/outputs/checkpoints/best.pth"
+  "checkpoint": "/root/autodl-tmp/outputs/checkpoints/best_model.pth"
 }
 ```
 
@@ -1342,7 +1342,7 @@ EVALUATION COMPLETE
 ```bash
 # 1. 训练模型（带早停止）
 python src/train.py
-# 输出: /root/autodl-tmp/outputs/checkpoints/best.pth
+# 输出: /root/autodl-tmp/outputs/checkpoints/best_model.pth
 
 # 2. 评估模型
 bash scripts/evaluate.sh
@@ -1554,5 +1554,640 @@ bash scripts/evaluate.sh
 ---
 
 **🎯 项目状态**: ✅ **完全就绪！** 所有功能已实现并验证，包括标准化数据划分，可直接在完整数据集上训练和评估。
+
+---
+
+## 🔧 2025-10-20 更新：Checkpoint 管理优化 + 训练问题诊断
+
+### 更新概览
+
+本次更新主要解决两个问题：
+1. **简化 checkpoint 文件管理**：只保留必要的模型文件
+2. **诊断训练损失不下降问题**：分析根因并提供解决方案
+
+### 1. Checkpoint 文件简化
+
+#### 问题背景
+
+之前的训练会生成大量 checkpoint 文件：
+- `latest.pth` (每 epoch 覆盖)
+- `best.pth` (最优模型)
+- `epoch_005.pth`, `epoch_010.pth`, ... (周期性保存，占用大量空间)
+
+对于完整训练（100 epochs），会生成约 22 个文件，占用大量磁盘空间。
+
+#### 解决方案
+
+**仅保留两个 checkpoint 文件**：
+- `latest_model.pth` - 最新模型（每次验证后覆盖）
+- `best_model.pth` - 最佳模型（验证损失最低时覆盖）
+
+#### 修改内容
+
+**1. 代码修改** (`src/train.py`):
+```python
+def save_checkpoint(self, epoch: int, is_best: bool = False):
+    """Save checkpoint."""
+    checkpoint = { ... }
+    
+    # Save latest (overwrite)
+    latest_path = self.checkpoint_dir / "latest_model.pth"
+    torch.save(checkpoint, latest_path)
+    
+    # Save best (overwrite when current model is the new best)
+    if is_best:
+        best_path = self.checkpoint_dir / "best_model.pth"
+        torch.save(checkpoint, best_path)
+        print(f"  ✅ Saved best model (epoch {epoch})")
+    
+    # 移除了周期性 epoch_*.pth 保存逻辑
+```
+
+**2. 评估脚本更新** (`src/evaluate.py` + `scripts/evaluate.sh`):
+```python
+# 默认 checkpoint 路径从 best.pth 改为 best_model.pth
+default="/root/autodl-tmp/outputs/checkpoints/best_model.pth"
+```
+
+**3. 文档更新**:
+- `docs/QUICKSTART.md`
+- `docs/PROGRESS_QUADMODAL.md`
+
+所有示例路径和说明已更新为新的文件名。
+
+#### 影响
+
+- ✅ **磁盘占用大幅减少**：从 ~22 个文件降至 2 个
+- ✅ **管理更简单**：只需关注 latest 和 best
+- ✅ **保留关键信息**：最新状态 + 最优性能
+- ⚠️ **无法恢复中间 epoch**：如需要，可手动调整 `save_checkpoint`
+
+---
+
+### 2. 训练损失不下降问题诊断
+
+#### 现象
+
+训练过程中观察到：
+```
+Epoch 1-8:
+  Training Loss: 2.7081 (完全不变)
+  Validation Loss: 2.0822 (完全不变)
+```
+
+#### 根因分析
+
+**问题 1: SupConLoss 在小 batch 中正样本对不足**
+
+SupConLoss（监督对比学习）的工作原理：
+1. 在 batch 内寻找**同类样本对**（正样本对）
+2. 拉近正样本对，推远负样本对
+3. 如果 batch 内每个类别只有 1 个样本 → **没有正样本对** → 损失接近常数 → 梯度无效
+
+**当前配置分析**：
+- 训练样本数：576
+- Batch size：16（原配置）
+- 类别数：12（根据 manifest.csv）
+- **问题**：576 样本分 12 类，每类平均 ~48 个。Batch size 16 时，每类平均只有 1-2 个样本，正样本对严重不足！
+
+**问题 2: 模型参数冻结是否正确**
+
+已确认配置正确：
+- 三个预训练编码器（V-JEPA, DINOv2, AST）：`freeze_backbone: True` ✅
+- SensorEncoder + Fusion Module：完全可训练 ✅
+- 预计可训练参数：~10-30M (总 516M 的 5-10%)
+
+#### 解决方案
+
+**方案 1: 增大 Batch Size（已实施）**
+
+修改 `configs/train_config.py`：
+```python
+TRAIN_CONFIG = {
+    "batch_size": 32,  # 从 16 增至 32
+    ...
+}
+```
+
+**效果预估**：
+- Batch size 32 → 每类平均 2-3 个样本
+- 正样本对数量显著增加
+- SupConLoss 可以有效计算梯度
+
+**方案 2: 使用 StratifiedBatchSampler（已实施）**
+
+代码已经使用了 `StratifiedBatchSampler` 来确保每个 batch 内类别平衡。这是正确的做法，配合更大的 batch size 会更有效。
+
+**方案 3: 调整学习率（可选）**
+
+如果增大 batch size 后仍不收敛，可尝试：
+```python
+"learning_rate": 5e-4,  # 从 1e-4 增至 5e-4
+```
+
+**方案 4: 检查数据质量（必要时）**
+
+使用诊断脚本检查：
+```bash
+python scripts/diagnose_training.py
+```
+
+诊断内容：
+- ✅ 参数冻结状态
+- ✅ 梯度流检查
+- ✅ 优化器配置
+- ✅ Batch 内正样本对统计
+
+#### 诊断工具
+
+新增 `scripts/diagnose_training.py`：
+```python
+# 功能：
+- 统计各模块参数状态（总参数 vs 可训练参数）
+- 执行前向 + 反向传播，检查梯度流
+- 分析 SupConLoss 的正样本对数量
+- 验证优化器配置
+
+# 使用：
+python scripts/diagnose_training.py
+```
+
+---
+
+### 3. 实施建议
+
+#### 立即执行
+
+1. **重新训练**（使用更新后的配置）：
+```bash
+python src/train.py
+```
+
+预期变化：
+- Batch 数量从 36 降至 18（576/32）
+- 每 epoch 时间可能略有增加（~70-80s）
+- **训练损失应该开始下降**
+
+2. **监控前几个 epoch**：
+```
+Epoch 1: Training Loss 应从 2.71 开始下降
+Epoch 2-3: 应看到明显的损失降低趋势
+Epoch 5-10: 损失应稳定下降
+```
+
+3. **如仍不收敛**，运行诊断：
+```bash
+python scripts/diagnose_training.py
+```
+
+#### 后续优化（可选）
+
+如果训练正常但性能不理想：
+
+1. **增大学习率**：
+```python
+"learning_rate": 5e-4,  # 或 1e-3
+```
+
+2. **调整温度参数**：
+```python
+"temperature": 0.1,  # 从 0.07 增至 0.1
+```
+
+3. **延长 warmup**：
+```python
+"warmup_epochs": 10,  # 从 5 增至 10
+```
+
+---
+
+### 4. 文件清单
+
+#### 修改的文件
+
+| 文件 | 修改内容 | 影响 |
+|------|---------|------|
+| `src/train.py` | 简化 checkpoint 保存逻辑 | 仅保存 latest_model.pth 和 best_model.pth |
+| `src/evaluate.py` | 更新默认 checkpoint 路径 | 使用 best_model.pth |
+| `scripts/evaluate.sh` | 更新默认 CHECKPOINT 变量 | 使用 best_model.pth |
+| `configs/train_config.py` | batch_size: 16 → 32 | 增加正样本对数量 |
+| `docs/QUICKSTART.md` | 更新所有 checkpoint 示例路径 | 文档一致性 |
+| `docs/PROGRESS_QUADMODAL.md` | 更新示例路径 + 本章节 | 文档一致性 + 问题记录 |
+
+#### 新增的文件
+
+| 文件 | 用途 | 大小 |
+|------|------|------|
+| `scripts/diagnose_training.py` | 训练问题诊断工具 | ~350 行 |
+| `scripts/diagnose.sh` | 诊断脚本启动器 | ~10 行 |
+
+---
+
+### 5. 预期结果
+
+#### Checkpoint 文件
+
+训练完成后，`/root/autodl-tmp/outputs/checkpoints/` 目录包含：
+```
+checkpoints/
+├── latest_model.pth      # 最新模型（epoch 100 或早停时）
+└── best_model.pth        # 最佳模型（验证损失最低）
+```
+
+#### 训练曲线
+
+正常情况下应看到：
+```
+Epoch 1:  Train Loss: 2.71 → Val Loss: 2.08
+Epoch 5:  Train Loss: 2.2  → Val Loss: 1.8
+Epoch 10: Train Loss: 1.8  → Val Loss: 1.5
+...
+Epoch N:  Train Loss: 0.5  → Val Loss: 0.8 (收敛)
+```
+
+如果仍看到损失完全不变，请运行诊断工具。
+
+---
+
+### 6. 总结
+
+✅ **已完成**：
+- Checkpoint 管理简化（2 个文件）
+- Batch size 优化（16 → 32）
+- 诊断工具创建
+- 全面文档更新
+
+⏳ **待验证**（服务器上）：
+- 训练损失是否正常下降
+- 模型是否正常收敛
+
+📊 **下一步**：
+1. 在服务器上重新运行训练
+2. 观察前 10 个 epoch 的损失变化
+3. 如有问题，运行 `python scripts/diagnose_training.py`
+4. 根据诊断结果调整超参数
+
+---
+
+### 7. 紧急调试补充（batch_size=32 仍不收敛）
+
+#### 现象
+即使将 batch_size 从 16 增至 32，训练损失仍完全不变：
+```
+Epoch 1-8: Training Loss 3.4340 (完全不变)
+```
+
+#### 新增调试功能
+
+**1. 训练循环内置调试**（`src/train.py`）
+
+在第一个 epoch 的第一个 batch 自动打印：
+- 标签分布和唯一值
+- 特征形状和统计
+- **正样本对数量**（关键指标）
+- **梯度状态**（参数是否收到梯度）
+- 参数更新验证
+
+**2. 调试脚本**（`scripts/train_debug.sh`）
+
+快速启动调试模式：
+```bash
+bash scripts/train_debug.sh
+```
+
+自动运行 3 个 epoch 并输出所有调试信息。
+
+**3. 梯度检查工具**（`scripts/debug_gradients.py`）
+
+提供两个函数可导入到训练代码：
+- `debug_model_gradients_and_params()` - 检查参数和梯度状态
+- `debug_loss_computation()` - 检查损失计算和正样本对
+
+#### 诊断步骤
+
+**在服务器上执行**：
+```bash
+# 1. 启用调试模式训练
+bash scripts/train_debug.sh
+
+# 2. 检查输出，重点关注：
+#    - "Positive pairs in batch: X" → 必须 > 0
+#    - "Params with grad: X" → 必须 > 0  
+#    - "Total grad norm: X.XX" → 必须 > 0
+
+# 3. 如果正样本对 = 0：
+#    → 问题：StratifiedBatchSampler 失效或数据集标签有问题
+#    → 解决：检查 dataset._labels，确认类别分布
+
+# 4. 如果梯度 = 0：
+#    → 问题：模型被完全冻结或计算图断开
+#    → 解决：检查模型初始化，确认 freeze_backbone 设置
+
+# 5. 如果以上都正常但损失不变：
+#    → 问题：学习率太小或 SupConLoss 温度参数不当
+#    → 解决：尝试增大学习率（5e-4 或 1e-3）
+```
+
+#### 可能的根本原因
+
+基于两次测试（batch_size 16 和 32 都不收敛）：
+
+**最可能**：
+1. **StratifiedBatchSampler 实现有 bug** - 没有真正确保每个 batch 内有多个同类样本
+2. **数据集标签问题** - 实际类别数 ≠ 预期（可能只有 2-3 类，而不是 12 类）
+3. **模型参数完全冻结** - 虽然配置正确但实际被冻结了
+
+**较少可能**：
+4. 学习率太小（但 1e-4 通常足够）
+5. SupConLoss 温度参数不当（0.07 是标准值）
+
+#### 下一步行动
+
+**立即执行**（优先级从高到低）：
+
+1. ✅ 运行 `bash scripts/train_debug.sh`
+2. ✅ 检查 "Positive pairs in batch" 输出
+3. ✅ 检查 "Params with grad" 输出
+4. ⏳ 根据输出结果：
+   - 如果正样本对 = 0 → 修复采样器
+   - 如果梯度 = 0 → 修复参数冻结
+   - 如果都正常 → 调整超参数
+
+---
+
+### 8. 🎯 根本问题确认与修复
+
+#### 诊断结果
+
+通过调试输出发现**根本问题**：
+
+```
+[DEBUG] Batch labels - unique: [0], counts: [32]
+```
+
+**StratifiedBatchSampler 完全失效**！
+- 每个 batch 的 32 个样本都来自**同一个类别**
+- 这导致 batch 内全是正样本对，没有负样本
+- SupConLoss 在这种情况下收敛到常数：`loss = -log(31) ≈ 3.434`
+- 这正是我们观察到的 3.4341！
+
+#### 为什么会这样？
+
+检查数据集标签分布后发现：
+- 训练集 576 个样本
+- 可能存在严重的类别不平衡
+- StratifiedBatchSampler 的实现有 bug，没有真正混合类别
+
+#### 修复方案
+
+**修改 `src/samplers.py` 中的 `StratifiedBatchSampler`**：
+
+旧逻辑（有问题）：
+```python
+# 旧代码倾向于从单个类别连续采样
+for label in labels_with_pairs:
+    take = min(2, len(shuffled_indices[label]), needed)
+    # 这导致某些 batch 可能全来自一个类
+```
+
+新逻辑（已修复）：
+```python
+# 新代码确保每个类别均匀分配
+samples_per_class = max(2, batch_size // num_classes)
+
+for label in all_labels:
+    # 从每个类别取 samples_per_class 个样本
+    take = min(samples_per_class, available, batch_size - len(batch))
+    # 确保 batch 内有多个类别
+```
+
+#### 预期效果
+
+修复后，每个 batch 应该包含：
+- **多个不同类别**（而不是单一类别）
+- 类别 0: ~2-4 个样本
+- 类别 1: ~2-4 个样本
+- ...
+- 类别 N: ~2-4 个样本
+
+这样：
+- ✅ 每个类内有正样本对（2-4 个）
+- ✅ 类间有负样本对（不同类别）
+- ✅ SupConLoss 可以有效学习
+
+#### 验证方法
+
+重新运行训练并检查：
+```bash
+bash scripts/train_debug.sh
+```
+
+期望看到：
+```
+[DEBUG] Batch labels - unique: [0, 1, 2, 3, ...], counts: [3, 2, 4, 3, ...]
+```
+
+如果仍然只有单一类别，说明数据集本身可能有问题（某个类别占据了绝大多数样本）。
+
+---
+
+**更新时间**: 2025年10月20日  
+**状态**: ✅ 核心问题已定位并修复（StratifiedBatchSampler），等待验证
+
+---
+
+## 9. 训练优化 - Warmup + 特征归一化 (2025-10-20)
+
+### 问题描述
+
+用户尝试多次调整学习率但 loss 仍然不下降：
+- `lr=1e-4`: loss 卡在 3.4340
+- `lr=1e-6`: loss 卡在 3.4531
+- `lr=1e-10`: loss 卡在 3.5419
+
+### 实施的优化
+
+#### 1. **Linear Warmup 调度器**
+
+添加学习率线性预热，避免训练初期梯度过大导致的不稳定：
+
+**配置 (configs/train_config.py):**
+```python
+TRAIN_CONFIG = {
+    "lr_scheduler": "cosine_warmup",  # 启用 warmup
+    "warmup_epochs": 10,              # 前 10 个 epoch 预热
+    "warmup_start_lr": 1e-7,          # 预热起始学习率
+    "learning_rate": 1e-4,            # 预热结束后的目标学习率
+    "min_lr": 1e-6,                   # cosine 衰减最小值
+}
+```
+
+**实现逻辑 (src/train.py):**
+```python
+# Warmup phase (epochs 0-9)
+if epoch < warmup_epochs:
+    warmup_progress = (epoch + 1) / warmup_epochs
+    current_lr = warmup_start_lr + (base_lr - warmup_start_lr) * warmup_progress
+    # epoch 0: 1e-7
+    # epoch 5: 5e-5
+    # epoch 9: 1e-4
+
+# Normal phase (epochs 10+)
+else:
+    scheduler.step()  # Cosine annealing
+```
+
+#### 2. **特征归一化层**
+
+在模型输出添加 LayerNorm + L2 normalization：
+
+**模型修改 (src/models/quadmodal_model.py):**
+```python
+class QuadModalSOTAModel(nn.Module):
+    def __init__(self, ...):
+        # ... encoders and fusion ...
+        
+        # Feature normalization (helps contrastive learning)
+        self.feature_norm = nn.LayerNorm(hidden_dim)
+        self.l2_normalize = True
+    
+    def forward(self, batch):
+        # ... encode and fuse ...
+        fused_features = self.fusion(...)
+        
+        # Apply normalization
+        fused_features = self.feature_norm(fused_features)  # Stabilize
+        if self.l2_normalize:
+            fused_features = F.normalize(fused_features, p=2, dim=1)  # Unit sphere
+        
+        return fused_features
+```
+
+**为什么有效:**
+- **LayerNorm**: 稳定特征分布，加速收敛
+- **L2 Normalization**: 将特征投影到单位超球面，这是对比学习的标准做法
+  - SupConLoss 计算的是余弦相似度（点积）
+  - L2 归一化后，点积 = 余弦相似度
+  - 避免特征模长影响相似度计算
+
+#### 3. **增强调试输出**
+
+添加更详细的批次检查：
+
+**调试输出示例:**
+```bash
+python src/train.py --debug
+```
+
+```
+[DEBUG] Batch 0 labels - unique: [0, 1, 2, 3, 4, 5], counts: [3, 2, 4, 3, 2, 2]
+[DEBUG] ✅ Good! Batch contains 6 different classes
+[DEBUG] Features - mean: 0.000123, std: 0.571234, min: -0.999, max: 0.998
+[DEBUG] Positive pairs in batch: 18
+```
+
+如果仍然看到：
+```
+[DEBUG] Batch 0 labels - unique: [0], counts: [32]
+[DEBUG] ⚠️  WARNING: ALL 32 samples in batch are from class 0!
+[DEBUG] ⚠️  StratifiedBatchSampler may be broken - no class mixing!
+```
+
+说明采样器仍有问题。
+
+#### 4. **采样器验证工具**
+
+创建独立脚本检查采样器：
+
+**运行验证:**
+```bash
+python scripts/check_sampler.py
+```
+
+**预期输出（正常情况）:**
+```
+批次 1:
+  样本数: 32
+  唯一类别: [0, 1, 2, 3, 4, 5]
+  每类数量: [3, 2, 4, 3, 2, 2]
+  ✅ 正常! 批次包含 6 个不同类别
+
+批次 2:
+  样本数: 32
+  唯一类别: [0, 1, 2, 3, 4, 5]
+  每类数量: [2, 3, 3, 4, 2, 2]
+  ✅ 正常! 批次包含 6 个不同类别
+
+...
+
+✅ 采样器工作正常 - 所有批次都包含多个类别
+```
+
+**异常情况（采样器有bug）:**
+```
+批次 1:
+  样本数: 32
+  唯一类别: [0]
+  每类数量: [32]
+  ❌ 错误! 所有 32 个样本都是类别 0
+
+✅ 采样器有问题 - 某些批次只包含单一类别
+```
+
+### 文件修改总结
+
+| 文件 | 修改内容 |
+|------|---------|
+| `configs/train_config.py` | 添加 `warmup_epochs`, `warmup_start_lr` 配置 |
+| `configs/model_config.py` | FUSION 配置添加 `l2_normalize: True` |
+| `src/models/quadmodal_model.py` | 添加 `self.feature_norm` + L2 normalization |
+| `src/train.py` | 实现 warmup 调度逻辑 + 增强调试输出 |
+| `scripts/check_sampler.py` (新建) | 独立检查采样器工作状态 |
+| `docs/QUICKSTART.md` | 添加诊断训练问题的说明 |
+
+### 预期效果
+
+1. **Warmup**: 前 10 个 epoch LR 从 1e-7 逐渐升到 1e-4
+   - 避免初期梯度爆炸
+   - 让模型平滑进入训练状态
+
+2. **特征归一化**: 
+   - 训练更稳定
+   - 特征分布更均匀
+   - 对比学习效果更好
+
+3. **调试工具**:
+   - 快速定位采样器问题
+   - 验证批次类别分布
+   - 检查特征统计信息
+
+### 下一步
+
+运行训练并观察：
+
+```bash
+# 1. 先检查采样器（确保批次混合类别）
+python scripts/check_sampler.py
+
+# 2. 启用调试模式训练
+python src/train.py --debug
+
+# 3. 观察前几个 epoch 的输出
+```
+
+**关键指标:**
+- ✅ Warmup LR 应该从 1e-7 逐渐升到 1e-4
+- ✅ 批次应包含多个类别（不是全 [0]）
+- ✅ Loss 应该在 10-20 epoch 后开始下降
+
+如果 loss 仍然不降，可能原因：
+1. **数据集严重不平衡**: 某一类占据 >90% 样本
+2. **模型参数冻结过度**: 检查 `freeze_backbone` 设置
+3. **学习率仍然太大/太小**: 尝试 5e-5 或 5e-4
+
+---
+
+**更新时间**: 2025年10月20日 17:30  
+**状态**: ✅ Warmup + 特征归一化已实现，等待用户验证训练效果
 
 ````
