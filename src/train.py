@@ -127,6 +127,7 @@ class Trainer:
             image_size=IMAGE_SIZE,
             num_angles=IMAGE_NUM_ANGLES,
             dummy=self.use_dummy,
+            augment=self.config.get("use_augmentations", False),
         )
         
         print(f"  Train samples: {len(train_dataset)}")
@@ -175,6 +176,7 @@ class Trainer:
             image_size=IMAGE_SIZE,
             num_angles=IMAGE_NUM_ANGLES,
             dummy=self.use_dummy,
+            augment=False,
         )
         
         print(f"  Val samples: {len(val_dataset)}")

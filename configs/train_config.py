@@ -5,7 +5,7 @@ TRAIN_CONFIG = {
     # Optimization
     "batch_size": 32,  # Increased for SupConLoss (need more positive pairs per batch)
     "num_epochs": 100,
-    "learning_rate": 5e-5,  # Restored from 3e-5 for faster early convergence
+    "learning_rate": 2e-5,  # Restored from 3e-5 for faster early convergence
     "weight_decay": 1e-2,  # Further increased to 0.01 (very strong L2)
     "optimizer": "adamw",  # "adam", "adamw", "sgd"
     
@@ -23,7 +23,7 @@ TRAIN_CONFIG = {
     "supcon_weight": 1.0,
     
     # Regularization via data augmentation
-    "use_mixup": True,  # Feature-level mixup
+    "use_mixup": False,  # Feature-level mixup
     "mixup_alpha": 0.2,  # Beta distribution param (0.2 = conservative mixing)
     
     # Training strategy
@@ -35,6 +35,8 @@ TRAIN_CONFIG = {
     "num_workers": 4,
     "pin_memory": True,
     "prefetch_factor": 2,
+    # Data augmentation (applies to training split only)
+    "use_augmentations": True,
     
     # Logging
     "log_interval": 10,  # Log every N batches

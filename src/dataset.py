@@ -55,6 +55,7 @@ class WeldingDataset(Dataset):
         audio_duration: int = None,
         sensor_length: int = None,
         dummy: bool = None,
+        augment: bool = False,
     ) -> None:
         # Handle backward-compatibility aliases
         if data_root is not None:
@@ -71,6 +72,7 @@ class WeldingDataset(Dataset):
             sensor_len = sensor_length
         if dummy is not None:
             mode = "dummy" if dummy else "real"
+        self.augment = bool(augment)
         
         self.root_dir = root_dir
         self.mode = mode
@@ -297,7 +299,14 @@ class WeldingDataset(Dataset):
             images = torch.from_numpy(images)
             audio = torch.from_numpy(audio)
             sensor = torch.from_numpy(sensor)
-
+        # For dummy mode, optionally apply simple augmentations when requested
+        if self.augment and self.split == 'train':
+            try:
+                video = self._augment_video_numpy(video) if not isinstance(video, getattr(torch, 'Tensor', object)) else video
+                images = self._augment_images_numpy(images) if not isinstance(images, getattr(torch, 'Tensor', object)) else images
+            except Exception:
+                # best-effort: if augmentation fails in dummy mode, ignore and continue
+                pass
         return {
             "video": video,
             "post_weld_images": images,
@@ -340,7 +349,40 @@ class WeldingDataset(Dataset):
                 audio = torch.from_numpy(audio)
             if isinstance(sensor, np.ndarray):
                 sensor = torch.from_numpy(sensor)
+        # Apply augmentations only for training split and when enabled
+        if self.augment and (self.split == 'train' or self.split is None):
+            try:
+                # operate on numpy if available; convert back to torch if necessary
+                if isinstance(images, torch.Tensor):
+                    imgs_np = images.cpu().numpy()
+                    imgs_np = self._augment_images_numpy(imgs_np)
+                    images = torch.from_numpy(imgs_np)
+                elif isinstance(images, np.ndarray):
+                    images = self._augment_images_numpy(images)
 
+                if isinstance(video, torch.Tensor):
+                    vid_np = video.cpu().numpy()
+                    vid_np = self._augment_video_numpy(vid_np)
+                    video = torch.from_numpy(vid_np)
+                elif isinstance(video, np.ndarray):
+                    video = self._augment_video_numpy(video)
+
+                if isinstance(audio, torch.Tensor):
+                    aud_np = audio.cpu().numpy()
+                    aud_np = self._augment_audio_numpy(aud_np)
+                    audio = torch.from_numpy(aud_np)
+                elif isinstance(audio, np.ndarray):
+                    audio = self._augment_audio_numpy(audio)
+
+                if isinstance(sensor, torch.Tensor):
+                    sen_np = sensor.cpu().numpy()
+                    sen_np = self._augment_sensor_numpy(sen_np)
+                    sensor = torch.from_numpy(sen_np)
+                elif isinstance(sensor, np.ndarray):
+                    sensor = self._augment_sensor_numpy(sensor)
+            except Exception:
+                # best-effort: do not fail load if augmentation errors
+                pass
         return {
             "video": video,
             "post_weld_images": images,
@@ -564,6 +606,100 @@ class WeldingDataset(Dataset):
         out = (out - mean) / std
 
         return out.astype(np.float32)
+
+    # ----------------------
+    # Augmentation helpers
+    # ----------------------
+    def _augment_images_numpy(self, images):
+        """Apply in-place simple image augmentations to numpy images.
+
+        images: (N, C, H, W), values in [0,1]
+        """
+        if images is None:
+            return images
+        # ensure float32
+        imgs = images.astype(np.float32)
+        N = imgs.shape[0]
+        for i in range(N):
+            img = imgs[i]
+            # horizontal flip
+            if random.random() < 0.5:
+                img = img[:, :, ::-1]
+            # brightness jitter
+            b = 1.0 + random.uniform(-0.2, 0.2)
+            img = img * b
+            # contrast jitter
+            c = 1.0 + random.uniform(-0.2, 0.2)
+            mean = img.mean(axis=(1, 2), keepdims=True)
+            img = (img - mean) * c + mean
+            # random erasing
+            if random.random() < 0.25:
+                H = img.shape[1]
+                W = img.shape[2]
+                area = H * W
+                erase_area = int(area * random.uniform(0.02, 0.2))
+                if erase_area > 0:
+                    ew = max(1, int((erase_area ** 0.5)))
+                    eh = ew
+                    x = random.randint(0, max(0, W - ew))
+                    y = random.randint(0, max(0, H - eh))
+                    img[:, y:y+eh, x:x+ew] = 0.0
+            # clip
+            img = np.clip(img, 0.0, 1.0)
+            imgs[i] = img
+        return imgs
+
+    def _augment_video_numpy(self, video):
+        """Apply video-level augmentations (consistent across frames).
+
+        video: (T, C, H, W)
+        """
+        if video is None:
+            return video
+        vid = video.astype(np.float32)
+        # decide flips/jitter once per clip
+        do_flip = random.random() < 0.5
+        b = 1.0 + random.uniform(-0.15, 0.15)
+        c = 1.0 + random.uniform(-0.15, 0.15)
+        Tlen = vid.shape[0]
+        for t in range(Tlen):
+            frame = vid[t]
+            if do_flip:
+                frame = frame[:, :, ::-1]
+            frame = frame * b
+            mean = frame.mean(axis=(1, 2), keepdims=True)
+            frame = (frame - mean) * c + mean
+            frame = np.clip(frame, 0.0, 1.0)
+            vid[t] = frame
+        return vid
+
+    def _augment_audio_numpy(self, audio):
+        """Simple mel-spectrogram augmentations: additive noise + time masking.
+
+        audio: (1, n_mels, T)
+        """
+        if audio is None:
+            return audio
+        a = audio.astype(np.float32)
+        # additive gaussian noise
+        sigma = 0.01 * (a.std() if a.size else 1.0)
+        a = a + np.random.normal(scale=sigma, size=a.shape).astype(np.float32)
+        # time mask
+        if a.shape[-1] > 4 and random.random() < 0.5:
+            T = a.shape[-1]
+            mask_len = int(random.uniform(0.02, 0.15) * T)
+            start = random.randint(0, max(0, T - mask_len))
+            a[:, :, start:start+mask_len] = a.min() if a.size else 0.0
+        return a
+
+    def _augment_sensor_numpy(self, sensor):
+        """Sensor augmentation: small Gaussian noise."""
+        if sensor is None:
+            return sensor
+        s = sensor.astype(np.float32)
+        sigma = 0.01 * (s.std() if s.size else 1.0)
+        s = s + np.random.normal(scale=sigma, size=s.shape).astype(np.float32)
+        return s
 
     @staticmethod
     def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:

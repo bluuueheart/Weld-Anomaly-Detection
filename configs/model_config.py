@@ -31,10 +31,10 @@ AUDIO_ENCODER = {
 # Sensor encoder config (Transformer)
 SENSOR_ENCODER = {
     "input_dim": 6,
-    "embed_dim": 256,
+    "embed_dim": 128,
     "num_heads": 8,
-    "num_layers": 4,
-    "dim_feedforward": 1024,
+    "num_layers": 2,
+    "dim_feedforward": 512,
     "dropout": 0.2,  # Moderate regularization (reduced from 0.4)
 }
 
@@ -44,9 +44,9 @@ FUSION = {
     "image_dim": 768,
     "audio_dim": 768,
     "sensor_dim": 256,
-    "hidden_dim": 512,
-    "num_fusion_tokens": 4,
-    "num_heads": 8,
+    "hidden_dim": 384,
+    "num_fusion_tokens": 2,
+    "num_heads": 4,
     "dropout": 0.2,  # Moderate regularization (reduced from 0.4)
     "l2_normalize": True,  # L2 normalization for contrastive learning (recommended)
 }
