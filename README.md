@@ -1,3 +1,92 @@
+# Weld-Anomaly-Detection
+
+## 一句话总结
+四模态深度融合：冻结三类预训练视觉/音频 backbone（视频/图像/音频），训练可学习的传感器编码器与 Cross-Attention 融合头，采用 Supervised Contrastive Loss + 下游分类/检测头微调。
+
+## 合同（Inputs / Outputs / 错误模式）
+- 输入：字典形式的四模态样本 {
+  - `video`: Tensor (B, T, 1, H, W) — 采样帧数 T，单通道（灰度）
+  - `post_images`: Tensor (B, N, 3, H, W) — N 个多角度静态图
+  - `audio`: Tensor (B, C, L) 或 Mel (B, 1, M, F)
+  - `sensors`: Tensor (B, S, F_s) — 多通道时间序列
+  - `label`: int 或 Tensor (B,) 
+- 输出：{
+  - `features`: Tensor (B, D_fusion) — 融合特征
+  - `logits`: Tensor (B, num_classes)
+  - `anomaly_score`(可选)：float 或 Tensor (B,)
+}
+- 常见错误模式：模态不同步/长度不一致、后处理未归一化、部分模态缺失未按 mask 处理。
+
+## 模型详细架构（分块描述）
+1) Backbones（冻结为主）
+   - VideoEncoder: V-JEPA（vit-based）
+     - 输入 -> 时空特征序列 (B, T', Dv)
+     - 冻结大部分参数，仅允许最后投射层/adapter 学习
+   - ImageEncoder: DINOv2
+     - 对 N 张图分别编码 -> (B, N, Di)
+   - AudioEncoder: AST (或可替换为 Wav2Vec2/Audioset 变体)
+     - 输出 (B, Da)
+   - SensorEncoder: TransformerEncoder（从零训练）
+     - 输入时间序列 -> 输出时序特征 (B, S', Ds)
+
+2) Cross-Attention Fusion Module（Trainable）
+   - 将四路特征视作 Key/Value/Query 的集合：允许 Video 或 Sensor 作为主查询，动态聚合其他模态信息。
+   - 结构：多头 cross-attention -> 层归一化 -> FFN -> 池化（或 CLS token）-> 得到融合向量 D_fusion。
+
+3) Heads
+   - SupCon Projection Head（用于对比学习）：2-layer MLP -> L2 正则化
+   - 分类 Head / 异常评分 Head：单层或两层 MLP 输出 logits / score
+
+## 训练与微调策略（实用配置）
+- 优化器：AdamW；基础 lr 1e-4（head），backbone lr 0 / 微小 lr（如 1e-6）用于少量解冻层
+- Batch size 建议：2–16（受显存限制）
+- 混合精度：推荐启用（AMP）
+- 学习率调度：Cosine 或 ReduceLROnPlateau；warmup 500–1000 steps
+- 冻结策略：默认冻结 backbone；对比实验：尝试解冻最后 1–3 层或使用 adapters/LoRA
+- 损失：SupConLoss(primary) + CrossEntropy（辅助）或加权合并
+- 检查点：按 val metric（e.g., F1）保存最佳模型，并周期性保存最近 N 个
+
+## 数据管线要点
+- 视频：固定帧率采样、中心/均匀采样 T 帧、resize 并标准化。
+- 图片：读取 N 个角度，resize->normalize；缺角时 pad 常数或重复视角并 mask。
+- 音频：resample->Mel spectrogram（或直接时域模型），归一化。
+- 传感器：按时间对齐，线性/样条插值缺失，Z-score 标准化，固定长度截断/补零。
+
+## 评估协议（可复现）
+- 特征库 + kNN：在训练集构建特征库，测试时用 k-NN（k=5）评估分类/异常检出
+- 指标：Accuracy, Macro F1, Per-class F1, AUROC（异常评分），Confusion Matrix
+- 快速验证（过拟合测试）：用每类少量样本（如 2 个/类）训练，期望训练集准确率接近 100%。
+
+## 优化与创新建议（按优先级，短句直接可落地）
+1) 轻量微调优先：Adapters/LoRA 替代全量微调，极大减少可训练参数且易部署。
+2) 时序对齐器：显式学习视频/传感器/音频的时间对齐（cross-modal temporal attention），减少模态错位误差。
+3) 对比挖掘策略：采用困难负样本采样（hard negative mining）提升 SupCon 效果。
+4) 半/自监督预训练：对本域无标签视频/音频做短期自监督（SimCLR/MAE 式）再微调。
+5) 多任务头：同时训练分类 + 重建（或预测下步传感器），提升泛化与鲁棒性。
+6) 校准与不确定量化：用温度缩放与贝叶斯后处理（MC Dropout 或 DeepEnsemble）获得可靠异常置信度。
+7) 推理优化：动态量化 + 剪枝 + TorchScript 导出，确保工业部署延迟可控。
+8) 可解释性：为图像/视频加入 GradCAM / attention 可视化，辅助工程师定位缺陷源。
+9) 数据增强：针对焊接场景的合成瑕疵样本与时间域扰动增强，缓解类不平衡。
+10) 融合探索：比较 Late Fusion vs Mid Fusion vs Cross-Attention（定量报告每项对 F1/AUROC 的影响）。
+
+![最后一次运行的结果](image.png)
+**最后一次运行的结果**：说实话挺令人疑惑的，疑似过拟合但acc没有提升空间了。暂时这样吧。已经调参许久了。
+
+## 总结
+大创TODO: 
+控制部分：
+- 实现
+
+缺陷检测部分（当前）：
+- 模块创新：方案确定和实施
+- baseline复现
+- 成果转化(可选): 具体工作量参考论文 Cross-Modal Learning for Anomaly Detection in Complex Industrial Process: Methodology and Benchmark, b刊1区，带benchmark，复现了10多个baseline
+----------------------------------------------------------------------
+
+# 详细技术方案与实现路径
+
+## 基线设计与对比实验（Baselines & Ablations）
+
 | 类别 (Category) | 模型/基线名称 (Model/Baseline Name) | 核心技术 (Core Technology) | 实验目的 / 对比对象 (Experimental Purpose / Comparison Target) |
 | :--- | :--- | :--- | :--- |
 | **A. 论文复现基线**<br>(Paper Reproduction) | `Paper-Baseline (Reproduced)` | Audio 1D CNN-AE + Video Slowfast-AE，然后进行后期分数融合 (Late Fusion) 。 | **最重要的基准**。验证您的实验环境，并提供一个必须超越的、最直接的性能参照点。 |
@@ -9,7 +98,7 @@
 | | `SOTA-Mid-Fusion` | 将B组中**四个**SOTA模型提取的特征向量进行拼接（Concatenate），再通过MLP进行融合。 | **证明中层特征融合的价值**。对比`SOTA-Late-Fusion`，展示在特征层面进行融合优于在分数层面融合。 |
 | **D. 最终提出的SOTA模型**<br>(Proposed SOTA Model) | `Proposed-Deep-Fusion` (您的模型) | **冻结Backbone并微调头部**：采用交叉注意力机制（Cross-Attention）对**四个**SOTA模态的特征进行深度、动态的融合。 | **核心贡献**。对比所有A, B, C组基线，特别是`SOTA-Mid-Fusion`，证明您的深度融合策略能够最有效地利用过程与结果的多模态信息，实现最佳性能。 |
 
-### **最终SOTA技术方案：基于微调的监督对比学习四模态深度融合网络**
+### 技术方案：基于微调的监督对比学习四模态深度融合网络
 
 ### **1. 部署模型选型 (Model Selection & Deployment)**
 

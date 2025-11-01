@@ -60,3 +60,48 @@ CATEGORIES = {
     "warping": 10,
     "overlap": 11,
 }
+
+# Augmentation configuration: probabilities and parameter ranges used by
+# src.dataset's augmentation helpers. Kept lightweight and optional so code
+# continues to work when import fails (defaults are provided in code).
+AUGMENTATION = {
+    # spatial
+    "p_hflip": 0.5,
+    "p_vflip": 0.0,
+    "p_rotate": 0.3,
+    "rotate_max_deg": 10.0,
+    "p_random_resized_crop": 0.3,
+    "rrc_scale_min": 0.8,
+
+    # color
+    "brightness": 0.2,
+    "contrast": 0.2,
+    "saturation": 0.1,
+    "hue": 0.05,
+
+    # blur / noise
+    "p_blur": 0.2,
+    "blur_max_ksize": 5,
+    "p_gauss_noise": 0.2,
+    "gauss_noise_sigma": 0.02,
+
+    # erasing / cutout
+    "p_cutout": 0.25,
+    "cutout_area_min": 0.02,
+    "cutout_area_max": 0.2,
+
+    # video-specific
+    "p_temporal_shift": 0.2,
+    "max_temporal_shift": 2,
+
+    # audio (specaugment)
+    "p_freq_mask": 0.5,
+    "freq_mask_max_band": 0.2,  # fraction of n_mels
+    "p_time_mask": 0.5,
+    "time_mask_max_band": 0.15,
+
+    # sensor
+    "p_channel_dropout": 0.15,
+    "p_channel_scale": 0.3,
+    "channel_scale_max": 0.05,
+}

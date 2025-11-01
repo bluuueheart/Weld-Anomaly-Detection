@@ -202,66 +202,18 @@ class WeldingDataset(Dataset):
                 print(f"[WeldingDataset] Skipped {len(skipped_examples)} missing samples from manifest (examples: {example})")
 
             return final_paths, final_labels
-        
-        # Fallback to directory scanning (original logic)
-        ids, labels = [], []
-        if not os.path.isdir(self.root_dir):
-            return ids, labels
-        
-        # Build category mapping from configs to keep a single source of truth.
-        try:
-            from configs.dataset_config import CATEGORIES
-        except Exception:
-            # fallback to previous ad-hoc mapping if config import fails
-            CATEGORIES = {
-                "good": 0,
-                "excessive_convexity": 1,
-                "undercut": 2,
-                "lack_of_fusion": 3,
-                "porosity_w-excessive_penetration": 4,
-                "porosity": 5,
-                "spatter": 6,
-                "burnthrough": 7,
-                "excessive_penetration": 8,
-                "crater_cracks": 9,
-                "warping": 10,
-                "overlap": 11,
-            }
 
-        # To avoid ambiguous matches (e.g. 'porosity' vs 'porosity_w-excessive_penetration')
-        # prefer the longest matching key when multiple keys are substrings of the
-        # folder name.
-        category_keys = sorted(CATEGORIES.keys(), key=lambda k: -len(k))
-
-        for cat_folder in sorted(os.listdir(self.root_dir)):
-            cat_path = os.path.join(self.root_dir, cat_folder)
-            if not os.path.isdir(cat_path):
-                continue
-            
-            # Extract label from folder name (first match wins)
-            folder_lower = cat_folder.lower()
-            label = None
-            matched_key = None
-            for key in category_keys:
-                if key.lower() in folder_lower:
-                    matched_key = key
-                    label = int(CATEGORIES[key])
-                    break
-            # If no key matched, default to 'good' if available in CATEGORIES
-            if label is None:
-                if "good" in CATEGORIES:
-                    label = int(CATEGORIES["good"])
-                else:
-                    label = 0
-            
-            # Scan sample folders
-            for sample_folder in sorted(os.listdir(cat_path)):
-                sample_path = os.path.join(cat_path, sample_folder)
-                if os.path.isdir(sample_path):
-                    ids.append(os.path.join(cat_folder, sample_folder))
-                    labels.append(label)
-        
-        return ids, labels
+        # If no manifest is present, fail fast to avoid silent train/val overlap.
+        # Using the full filesystem scan as a fallback can silently introduce
+        # data leakage (train and val getting the same samples). Require an
+        # explicit manifest or run the resplit utility to generate one.
+        msg = (
+            f"[WeldingDataset] ERROR: manifest not found at '{self.manifest_path}'.\n"
+            "Please create a manifest.csv (TRAIN/TEST split) or run scripts/resplit_dataset.py.\n"
+            "Refusing to continue to avoid train/validation data leakage."
+        )
+        print(msg)
+        raise RuntimeError(msg)
 
     def __len__(self) -> int:
         return len(self._ids)
@@ -617,36 +569,135 @@ class WeldingDataset(Dataset):
         """
         if images is None:
             return images
-        # ensure float32
+
+        # optional config from configs.dataset_config.AUGMENTATION
+        try:
+            from configs.dataset_config import AUGMENTATION as AUG
+        except Exception:
+            AUG = None
+
+        # default parameters
+        p_hflip = AUG.get("p_hflip", 0.5) if AUG else 0.5
+        p_vflip = AUG.get("p_vflip", 0.0) if AUG else 0.0
+        p_rotate = AUG.get("p_rotate", 0.3) if AUG else 0.3
+        rotate_max = AUG.get("rotate_max_deg", 10.0) if AUG else 10.0
+        p_rrc = AUG.get("p_random_resized_crop", 0.3) if AUG else 0.3
+        rrc_scale_min = AUG.get("rrc_scale_min", 0.8) if AUG else 0.8
+        brightness = AUG.get("brightness", 0.2) if AUG else 0.2
+        contrast = AUG.get("contrast", 0.2) if AUG else 0.2
+        saturation = AUG.get("saturation", 0.1) if AUG else 0.1
+        hue = AUG.get("hue", 0.05) if AUG else 0.05
+        p_blur = AUG.get("p_blur", 0.2) if AUG else 0.2
+        blur_max = AUG.get("blur_max_ksize", 5) if AUG else 5
+        p_noise = AUG.get("p_gauss_noise", 0.2) if AUG else 0.2
+        noise_sigma = AUG.get("gauss_noise_sigma", 0.02) if AUG else 0.02
+        p_cutout = AUG.get("p_cutout", 0.25) if AUG else 0.25
+        cutout_min = AUG.get("cutout_area_min", 0.02) if AUG else 0.02
+        cutout_max = AUG.get("cutout_area_max", 0.2) if AUG else 0.2
+
         imgs = images.astype(np.float32)
         N = imgs.shape[0]
+
+        # helper: convert C,H,W -> H,W,C and back
+        def chw_to_hwc(arr):
+            return arr.transpose(1, 2, 0)
+
+        def hwc_to_chw(arr):
+            return arr.transpose(2, 0, 1)
+
         for i in range(N):
             img = imgs[i]
-            # horizontal flip
-            if random.random() < 0.5:
-                img = img[:, :, ::-1]
-            # brightness jitter
-            b = 1.0 + random.uniform(-0.2, 0.2)
-            img = img * b
-            # contrast jitter
-            c = 1.0 + random.uniform(-0.2, 0.2)
-            mean = img.mean(axis=(1, 2), keepdims=True)
-            img = (img - mean) * c + mean
-            # random erasing
-            if random.random() < 0.25:
-                H = img.shape[1]
-                W = img.shape[2]
+            H = img.shape[1]
+            W = img.shape[2]
+
+            # to HWC for cv2 ops
+            img_hwc = chw_to_hwc(img)
+
+            # random resized crop
+            if random.random() < p_rrc:
+                try:
+                    import cv2
+                    scale = random.uniform(rrc_scale_min, 1.0)
+                    new_h = max(1, int(H * scale))
+                    new_w = max(1, int(W * scale))
+                    top = random.randint(0, H - new_h) if H - new_h > 0 else 0
+                    left = random.randint(0, W - new_w) if W - new_w > 0 else 0
+                    cropped = img_hwc[top:top+new_h, left:left+new_w]
+                    img_hwc = cv2.resize(cropped, (W, H), interpolation=cv2.INTER_LINEAR)
+                except Exception:
+                    pass
+
+            # rotation
+            if random.random() < p_rotate:
+                try:
+                    import cv2
+                    ang = random.uniform(-rotate_max, rotate_max)
+                    M = cv2.getRotationMatrix2D((W/2.0, H/2.0), ang, 1.0)
+                    img_hwc = cv2.warpAffine((img_hwc * 255.0).astype(np.uint8), M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+                    img_hwc = img_hwc.astype(np.float32) / 255.0
+                except Exception:
+                    pass
+
+            # flips
+            if random.random() < p_hflip:
+                img_hwc = img_hwc[:, ::-1]
+            if random.random() < p_vflip:
+                img_hwc = img_hwc[::-1, :]
+
+            # color jitter: brightness
+            b = 1.0 + random.uniform(-brightness, brightness)
+            img_hwc = img_hwc * b
+
+            # contrast
+            c = 1.0 + random.uniform(-contrast, contrast)
+            mean = img_hwc.mean(axis=(0, 1), keepdims=True)
+            img_hwc = (img_hwc - mean) * c + mean
+
+            # saturation/hue via HSV when available
+            if (saturation > 0 or hue > 0):
+                try:
+                    import cv2
+                    img_cv = (np.clip(img_hwc, 0.0, 1.0) * 255.0).astype(np.uint8)
+                    hsv = cv2.cvtColor(img_cv, cv2.COLOR_RGB2HSV).astype(np.float32)
+                    # saturation
+                    s_factor = 1.0 + random.uniform(-saturation, saturation)
+                    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * s_factor, 0, 255)
+                    # hue shift
+                    h_factor = random.uniform(-hue, hue) * 180.0
+                    hsv[:, :, 0] = (hsv[:, :, 0] + h_factor) % 180.0
+                    img_cv = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+                    img_hwc = img_cv.astype(np.float32) / 255.0
+                except Exception:
+                    pass
+
+            # blur
+            if random.random() < p_blur:
+                try:
+                    import cv2
+                    k = random.choice([k for k in range(1, blur_max+1) if k % 2 == 1] or [3])
+                    img_hwc = cv2.GaussianBlur((img_hwc * 255.0).astype(np.uint8), (k, k), 0).astype(np.float32) / 255.0
+                except Exception:
+                    pass
+
+            # gaussian noise
+            if random.random() < p_noise:
+                sigma = noise_sigma * (img_hwc.std() if img_hwc.size else 1.0)
+                img_hwc = img_hwc + np.random.normal(scale=sigma, size=img_hwc.shape).astype(np.float32)
+
+            # cutout / random erasing
+            if random.random() < p_cutout:
                 area = H * W
-                erase_area = int(area * random.uniform(0.02, 0.2))
+                erase_area = int(area * random.uniform(cutout_min, cutout_max))
                 if erase_area > 0:
                     ew = max(1, int((erase_area ** 0.5)))
                     eh = ew
                     x = random.randint(0, max(0, W - ew))
                     y = random.randint(0, max(0, H - eh))
-                    img[:, y:y+eh, x:x+ew] = 0.0
-            # clip
-            img = np.clip(img, 0.0, 1.0)
-            imgs[i] = img
+                    img_hwc[y:y+eh, x:x+ew, :] = 0.0
+
+            img_hwc = np.clip(img_hwc, 0.0, 1.0)
+            imgs[i] = hwc_to_chw(img_hwc)
+
         return imgs
 
     def _augment_video_numpy(self, video):
@@ -656,21 +707,90 @@ class WeldingDataset(Dataset):
         """
         if video is None:
             return video
+
+        try:
+            from configs.dataset_config import AUGMENTATION as AUG
+        except Exception:
+            AUG = None
+
+        p_hflip = AUG.get("p_hflip", 0.5) if AUG else 0.5
+        p_vflip = AUG.get("p_vflip", 0.0) if AUG else 0.0
+        p_rotate = AUG.get("p_rotate", 0.3) if AUG else 0.3
+        rotate_max = AUG.get("rotate_max_deg", 10.0) if AUG else 10.0
+        p_rrc = AUG.get("p_random_resized_crop", 0.3) if AUG else 0.3
+        rrc_scale_min = AUG.get("rrc_scale_min", 0.8) if AUG else 0.8
+        p_temporal = AUG.get("p_temporal_shift", 0.2) if AUG else 0.2
+        max_shift = AUG.get("max_temporal_shift", 2) if AUG else 2
+
         vid = video.astype(np.float32)
-        # decide flips/jitter once per clip
-        do_flip = random.random() < 0.5
-        b = 1.0 + random.uniform(-0.15, 0.15)
-        c = 1.0 + random.uniform(-0.15, 0.15)
-        Tlen = vid.shape[0]
+        Tlen, C, H, W = vid.shape
+
+        # sample geometric params once
+        do_hflip = random.random() < p_hflip
+        do_vflip = random.random() < p_vflip
+        do_rotate = random.random() < p_rotate
+        angle = random.uniform(-rotate_max, rotate_max) if do_rotate else 0.0
+        do_rrc = random.random() < p_rrc
+        rrc_scale = random.uniform(rrc_scale_min, 1.0) if do_rrc else 1.0
+
+        # prepare affine if needed
+        M = None
+        if do_rotate:
+            try:
+                import cv2
+                M = cv2.getRotationMatrix2D((W/2.0, H/2.0), angle, 1.0)
+            except Exception:
+                M = None
+
+        # random resized crop coordinates
+        if do_rrc:
+            new_h = max(1, int(H * rrc_scale))
+            new_w = max(1, int(W * rrc_scale))
+            top = random.randint(0, H - new_h) if H - new_h > 0 else 0
+            left = random.randint(0, W - new_w) if W - new_w > 0 else 0
+        else:
+            top = 0; left = 0; new_h = H; new_w = W
+
+        # temporal shift (roll) sometimes
+        if random.random() < p_temporal and Tlen > 1:
+            shift = random.randint(-max_shift, max_shift)
+            vid = np.roll(vid, shift, axis=0)
+
+        # apply same transforms to each frame
         for t in range(Tlen):
             frame = vid[t]
-            if do_flip:
-                frame = frame[:, :, ::-1]
-            frame = frame * b
-            mean = frame.mean(axis=(1, 2), keepdims=True)
-            frame = (frame - mean) * c + mean
-            frame = np.clip(frame, 0.0, 1.0)
-            vid[t] = frame
+            # C,H,W -> H,W,C
+            frame_hwc = frame.transpose(1, 2, 0)
+
+            # crop+resize
+            try:
+                import cv2
+                if do_rrc:
+                    cropped = frame_hwc[top:top+new_h, left:left+new_w]
+                    frame_hwc = cv2.resize(cropped, (W, H), interpolation=cv2.INTER_LINEAR)
+                # rotate
+                if M is not None:
+                    frame_hwc = cv2.warpAffine((frame_hwc * 255.0).astype(np.uint8), M, (W, H), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+                    frame_hwc = frame_hwc.astype(np.float32) / 255.0
+            except Exception:
+                pass
+
+            # flips
+            if do_hflip:
+                frame_hwc = frame_hwc[:, ::-1]
+            if do_vflip:
+                frame_hwc = frame_hwc[::-1, :]
+
+            # color jitter small per-clip
+            b = 1.0 + random.uniform(-0.15, 0.15)
+            c = 1.0 + random.uniform(-0.15, 0.15)
+            frame_hwc = frame_hwc * b
+            mean = frame_hwc.mean(axis=(0, 1), keepdims=True)
+            frame_hwc = (frame_hwc - mean) * c + mean
+
+            # back to C,H,W
+            vid[t] = np.clip(frame_hwc, 0.0, 1.0).transpose(2, 0, 1)
+
         return vid
 
     def _augment_audio_numpy(self, audio):
@@ -680,25 +800,70 @@ class WeldingDataset(Dataset):
         """
         if audio is None:
             return audio
+
+        try:
+            from configs.dataset_config import AUGMENTATION as AUG
+        except Exception:
+            AUG = None
+
+        p_time = AUG.get("p_time_mask", 0.5) if AUG else 0.5
+        time_max = AUG.get("time_mask_max_band", 0.15) if AUG else 0.15
+        p_freq = AUG.get("p_freq_mask", 0.5) if AUG else 0.5
+        freq_max = AUG.get("freq_mask_max_band", 0.2) if AUG else 0.2
+
         a = audio.astype(np.float32)
-        # additive gaussian noise
+        # additive gaussian noise (small)
         sigma = 0.01 * (a.std() if a.size else 1.0)
         a = a + np.random.normal(scale=sigma, size=a.shape).astype(np.float32)
-        # time mask
-        if a.shape[-1] > 4 and random.random() < 0.5:
+
+        # time mask (SpecAugment style)
+        if a.shape[-1] > 4 and random.random() < p_time:
             T = a.shape[-1]
-            mask_len = int(random.uniform(0.02, 0.15) * T)
+            mask_len = int(random.uniform(0.02, time_max) * T)
             start = random.randint(0, max(0, T - mask_len))
             a[:, :, start:start+mask_len] = a.min() if a.size else 0.0
+
+        # freq mask
+        if a.shape[1] > 4 and random.random() < p_freq:
+            F = a.shape[1]
+            mask_band = int(random.uniform(0.01, freq_max) * F)
+            if mask_band > 0:
+                start_f = random.randint(0, max(0, F - mask_band))
+                a[:, start_f:start_f+mask_band, :] = a.min() if a.size else 0.0
+
         return a
 
     def _augment_sensor_numpy(self, sensor):
         """Sensor augmentation: small Gaussian noise."""
         if sensor is None:
             return sensor
+
+        try:
+            from configs.dataset_config import AUGMENTATION as AUG
+        except Exception:
+            AUG = None
+
+        p_dropout = AUG.get("p_channel_dropout", 0.15) if AUG else 0.15
+        p_scale = AUG.get("p_channel_scale", 0.3) if AUG else 0.3
+        scale_max = AUG.get("channel_scale_max", 0.05) if AUG else 0.05
+
         s = sensor.astype(np.float32)
+        # gaussian noise
         sigma = 0.01 * (s.std() if s.size else 1.0)
         s = s + np.random.normal(scale=sigma, size=s.shape).astype(np.float32)
+
+        # per-channel small scaling
+        if random.random() < p_scale:
+            C = s.shape[1] if s.ndim > 1 else 1
+            scales = 1.0 + np.random.uniform(-scale_max, scale_max, size=(C,))
+            s = s * scales.reshape((1, -1)) if s.ndim > 1 else s * scales[0]
+
+        # channel dropout
+        if random.random() < p_dropout and s.ndim > 1:
+            C = s.shape[1]
+            drop_ch = random.randint(0, C-1)
+            s[:, drop_ch] = 0.0
+
         return s
 
     @staticmethod

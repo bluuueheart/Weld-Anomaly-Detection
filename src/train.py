@@ -225,6 +225,62 @@ class Trainer:
         labels_a, labels_b = labels, labels[index]
         
         return mixed_features, labels_a, labels_b, lam
+
+    def _move_batch_to_device(self, batch: dict):
+        """Move tensors to device and convert numpy arrays to torch tensors.
+
+        Ensures numeric numpy arrays are converted to float32 tensors and labels
+        are converted to long. This avoids dtype mismatches (double vs float).
+        """
+        for key in list(batch.keys()):
+            val = batch[key]
+            # If it's already a torch tensor, ensure float tensors are float32
+            if isinstance(val, torch.Tensor):
+                if val.is_floating_point() and val.dtype != torch.float32:
+                    val = val.float()
+                if (key == 'label' or key == 'labels') and val.dtype != torch.long:
+                    val = val.long()
+                batch[key] = val.to(self.device)
+                continue
+
+            # Handle numpy arrays, lists/tuples of numbers, and other array-like
+            try:
+                import numpy as _np
+            except Exception:
+                _np = None
+
+            # Lists or tuples: convert to numpy first
+            if isinstance(val, (list, tuple)):
+                try:
+                    arr = np.asarray(val)
+                except Exception:
+                    batch[key] = val
+                    continue
+                val = arr
+
+            if _np is not None and isinstance(val, _np.ndarray):
+                # ensure numeric array
+                try:
+                    t = torch.from_numpy(val)
+                except Exception:
+                    # fallback: create tensor via torch.tensor
+                    try:
+                        t = torch.tensor(val)
+                    except Exception:
+                        batch[key] = val
+                        continue
+
+                # Cast floats to float32, labels to long
+                if t.is_floating_point() and t.dtype != torch.float32:
+                    t = t.float()
+                if (key == 'label' or key == 'labels') and t.dtype != torch.long:
+                    t = t.long()
+
+                batch[key] = t.to(self.device)
+                continue
+
+            # Leave other types (dicts, strings, etc.) unchanged
+            batch[key] = val
         
     def _setup_optimizer(self):
         """Setup optimizer and scheduler."""
@@ -345,10 +401,8 @@ class Trainer:
         epoch_start = time.time()
         
         for batch_idx, batch in enumerate(self.train_loader):
-            # Move data to device
-            for key in batch:
-                if isinstance(batch[key], torch.Tensor):
-                    batch[key] = batch[key].to(self.device)
+            # Move data to device and ensure correct tensor dtypes
+            self._move_batch_to_device(batch)
 
             # Lightweight debug: print labels stats for first batch when enabled
             if getattr(self, 'debug', False) and batch_idx == 0:
@@ -551,10 +605,8 @@ class Trainer:
         val_loss = 0.0
         
         for batch in self.val_loader:
-            # Move data to device
-            for key in batch:
-                if isinstance(batch[key], torch.Tensor):
-                    batch[key] = batch[key].to(self.device)
+            # Move data to device and ensure correct tensor dtypes
+            self._move_batch_to_device(batch)
             
             # Forward pass
             features = self.model(batch)
@@ -571,6 +623,83 @@ class Trainer:
         avg_loss = val_loss / len(self.val_loader)
         
         return {"loss": avg_loss}
+
+    @torch.no_grad()
+    def extract_features(self, loader):
+        """Extract features and labels from a dataloader.
+
+        Returns:
+            features: numpy array (N, D)
+            labels: numpy array (N,)
+        """
+        self.model.eval()
+        all_feats = []
+        all_labels = []
+        for batch in loader:
+            # Ensure tensors are on device and numpy arrays converted
+            self._move_batch_to_device(batch)
+
+            feats = self.model(batch)
+            if isinstance(feats, torch.Tensor):
+                all_feats.append(feats.cpu().numpy())
+            else:
+                # If model returns non-tensor, try converting
+                all_feats.append(np.asarray(feats))
+
+            labels = batch["label"]
+            if isinstance(labels, torch.Tensor):
+                all_labels.append(labels.cpu().numpy())
+            else:
+                all_labels.append(np.asarray(labels))
+
+        if len(all_feats) == 0:
+            return np.zeros((0,)), np.zeros((0,))
+
+        feats = np.concatenate(all_feats, axis=0)
+        labs = np.concatenate(all_labels, axis=0)
+        return feats, labs
+
+    def _nearest_centroid_accuracy(self, train_feats, train_labels, eval_feats, eval_labels, metric='cosine'):
+        """Compute accuracy using nearest-centroid classifier.
+
+        For cosine metric we L2-normalize features and centroids and use dot-product.
+        """
+        # Compute unique labels and centroids
+        unique = np.unique(train_labels)
+        centroids = []
+        labels_map = []
+        for u in unique:
+            mask = train_labels == u
+            if mask.sum() == 0:
+                continue
+            c = train_feats[mask].mean(axis=0)
+            centroids.append(c)
+            labels_map.append(u)
+        if len(centroids) == 0:
+            return 0.0
+
+        centroids = np.stack(centroids, axis=0)
+
+        # Normalize for cosine
+        if metric == 'cosine':
+            def norm(x):
+                n = np.linalg.norm(x, axis=1, keepdims=True)
+                n[n == 0] = 1.0
+                return x / n
+            eval_norm = norm(eval_feats)
+            cent_norm = norm(centroids)
+
+            sims = np.matmul(eval_norm, cent_norm.T)
+            idx = sims.argmax(axis=1)
+            preds = np.array([labels_map[i] for i in idx])
+        else:
+            # Euclidean: compute distances
+            dists = np.sqrt(((eval_feats[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2))
+            idx = dists.argmin(axis=1)
+            preds = np.array([labels_map[i] for i in idx])
+
+        acc = (preds == eval_labels).mean()
+        return float(acc)
     
     def save_checkpoint(self, epoch: int, is_best: bool = False):
         """Save checkpoint."""
@@ -623,9 +752,26 @@ class Trainer:
             # Train
             train_metrics = self.train_epoch(epoch)
             self.train_log.append(train_metrics)
-            
+
             # Print training loss
             print(f"  Training Loss: {train_metrics['loss']:.4f}")
+
+            # --- Compute train features & training-set accuracy (nearest-centroid) ---
+            try:
+                train_feats, train_labels = self.extract_features(self.train_loader)
+                if train_feats.size != 0:
+                    train_acc = self._nearest_centroid_accuracy(train_feats, train_labels, train_feats, train_labels, metric='cosine')
+                else:
+                    train_acc = 0.0
+            except Exception as e:
+                print(f"  [WARN] Failed to compute train accuracy: {e}")
+                train_acc = None
+
+            if train_acc is not None:
+                # annotate last appended train_metrics with acc for logging
+                if isinstance(self.train_log[-1], dict):
+                    self.train_log[-1]["acc"] = float(train_acc)
+                print(f"  Training Acc (centroid): {train_acc:.4f}")
             
             # Save logs incrementally (every epoch)
             self._save_logs()
@@ -633,9 +779,29 @@ class Trainer:
             # Validate
             if (epoch + 1) % self.config.get("val_interval", 1) == 0:
                 val_metrics = self.validate(epoch)
+                # Compute validation accuracy using train centroids
+                try:
+                    # Ensure we have train_feats/train_labels (reuse if available)
+                    if 'train_feats' not in locals():
+                        train_feats, train_labels = self.extract_features(self.train_loader)
+
+                    val_feats, val_labels = self.extract_features(self.val_loader)
+                    if val_feats.size != 0 and train_feats.size != 0:
+                        val_acc = self._nearest_centroid_accuracy(train_feats, train_labels, val_feats, val_labels, metric='cosine')
+                    else:
+                        val_acc = 0.0
+                except Exception as e:
+                    print(f"  [WARN] Failed to compute val accuracy: {e}")
+                    val_acc = None
+
+                # Append and print
+                if val_acc is not None:
+                    val_metrics["acc"] = float(val_acc)
                 self.val_log.append(val_metrics)
-                
+
                 print(f"  Validation Loss: {val_metrics['loss']:.4f}")
+                if val_acc is not None:
+                    print(f"  Validation Acc (centroid): {val_metrics['acc']:.4f}")
                 
                 # Check if best
                 is_best = val_metrics["loss"] < self.best_metric

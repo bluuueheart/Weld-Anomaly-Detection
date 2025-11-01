@@ -640,9 +640,29 @@ nohup bash scripts/train.sh > training.log 2>&1 &
 # 查看训练日志
 tail -f training.log
 
-# 绘制训练/验证损失曲线
+# 绘制训练/验证损失与精度曲线
+运行绘图脚本将生成合成图（loss + accuracy），默认输出到 `outputs/loss_and_accuracy.png`。
+
+```bash
 bash scripts/plot_loss.sh
 ```
+
+训练脚本现在在每个 epoch 的验证阶段记录并打印验证准确率（`val acc`），该值会写入 `outputs/logs/training_log.json` 的 `train` / `val` 条目中，绘图脚本会一并绘制训练/验证的 accuracy 曲线。
+
+### 绘制混淆矩阵 (Confusion Matrix)
+
+训练完成后，可用最近保存的最佳检查点生成验证集上的混淆矩阵以查找难类或类别不平衡问题。
+
+默认直接运行（在服务器上会优先尝试加载 `/root/autodl-tmp/outputs/checkpoints/best_model.pth`，若不存在脚本会退回到 dummy 模式生成示例混淆矩阵）：
+
+```bat
+python scripts/plot_confusion_matrix.py
+```
+
+可选参数：
+- `--checkpoint PATH`：指定检查点路径（默认 `/root/autodl-tmp/outputs/checkpoints/best_model.pth`）。
+- `--output PATH`：指定保存图像路径（默认 `outputs/confusion_matrix.png`）。
+- `--metric {cosine,euclidean}`：选择最近质心预测度量（默认 cosine）。
 
 **诊断训练问题:**
 

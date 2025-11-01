@@ -35,64 +35,66 @@ def plot_loss_curves(log_path, output_dir="outputs"):
     # 提取数据
     train_epochs = [i + 1 for i in range(len(train_log))]
     train_losses = [entry['loss'] for entry in train_log]
-    
+    train_accs = [entry.get('acc', None) for entry in train_log]
+
     val_epochs = []
     val_losses = []
+    val_accs = []
     if val_log:
         for entry in val_log:
             # 从 val_log 中提取 epoch (假设按顺序记录)
             val_epochs.append(len(val_epochs) + 1)
             val_losses.append(entry['loss'])
+            val_accs.append(entry.get('acc', None))
     
-    # 创建图表
-    plt.figure(figsize=(12, 6))
-    
-    # 绘制训练损失
-    plt.plot(train_epochs, train_losses, 
-             label='Training Loss', 
-             marker='o', 
-             linewidth=2, 
-             markersize=4,
-             color='#1f77b4',
-             alpha=0.8)
-    
-    # 绘制验证损失
+    # 创建图表（上：loss，下：accuracy）
+    fig, (ax_loss, ax_acc) = plt.subplots(2, 1, figsize=(12, 10), sharex=True,
+                                         gridspec_kw={'height_ratios': [3, 2]})
+
+    # Loss 曲线
+    ax_loss.plot(train_epochs, train_losses,
+                 label='Training Loss', marker='o', linewidth=2, markersize=4,
+                 color='#1f77b4', alpha=0.9)
     if val_losses:
-        plt.plot(val_epochs, val_losses, 
-                 label='Validation Loss', 
-                 marker='s', 
-                 linewidth=2, 
-                 markersize=4,
-                 color='#ff7f0e',
-                 alpha=0.8)
-        
+        ax_loss.plot(val_epochs, val_losses,
+                     label='Validation Loss', marker='s', linewidth=2, markersize=4,
+                     color='#ff7f0e', alpha=0.9)
+
         # 标记最佳验证损失
         if best_metric is not None and best_metric in val_losses:
             best_epoch = val_epochs[val_losses.index(best_metric)]
-            plt.axvline(x=best_epoch, color='green', linestyle='--', 
-                       linewidth=1.5, alpha=0.7, 
-                       label=f'Best Val Loss (Epoch {best_epoch})')
-            plt.scatter([best_epoch], [best_metric], 
-                       color='green', s=100, zorder=5, marker='*')
-    
-    plt.xlabel('Epoch', fontsize=12, fontweight='bold')
-    plt.ylabel('Loss', fontsize=12, fontweight='bold')
-    plt.title('Training and Validation Loss Curves', fontsize=14, fontweight='bold')
-    plt.legend(loc='best', fontsize=10)
-    plt.grid(True, alpha=0.3, linestyle='--')
+            ax_loss.axvline(x=best_epoch, color='green', linestyle='--', linewidth=1.5, alpha=0.7,
+                            label=f'Best Val Loss (Epoch {best_epoch})')
+            ax_loss.scatter([best_epoch], [best_metric], color='green', s=100, zorder=5, marker='*')
+
+    ax_loss.set_ylabel('Loss', fontsize=12, fontweight='bold')
+    ax_loss.set_title('Training and Validation Loss', fontsize=14, fontweight='bold')
+    ax_loss.legend(loc='best', fontsize=10)
+    ax_loss.grid(True, alpha=0.3, linestyle='--')
+
+    # Accuracy 曲线（仅当日志中存在 acc 字段）
+    has_train_acc = any(a is not None for a in train_accs)
+    has_val_acc = len(val_accs) > 0 and any(a is not None for a in val_accs)
+    if has_train_acc:
+        ax_acc.plot(train_epochs, [a if a is not None else float('nan') for a in train_accs],
+                    label='Training Acc', marker='o', linewidth=2, markersize=4, color='#2ca02c')
+    if has_val_acc:
+        ax_acc.plot(val_epochs, [a if a is not None else float('nan') for a in val_accs],
+                    label='Validation Acc', marker='s', linewidth=2, markersize=4, color='#d62728')
+
+    ax_acc.set_xlabel('Epoch', fontsize=12, fontweight='bold')
+    ax_acc.set_ylabel('Accuracy', fontsize=12, fontweight='bold')
+    ax_acc.set_title('Training and Validation Accuracy', fontsize=14, fontweight='bold')
+    ax_acc.legend(loc='best', fontsize=10)
+    ax_acc.grid(True, alpha=0.3, linestyle='--')
+
     plt.tight_layout()
-    
+
     # 保存图片
-    output_path = Path(output_dir) / 'loss_curves.png'
+    output_path = Path(output_dir) / 'loss_and_accuracy.png'
     output_path.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"✅ 损失曲线已保存到: {output_path}")
-    
-    # 同时保存高分辨率 PDF
-    pdf_path = Path(output_dir) / 'loss_curves.pdf'
-    plt.savefig(pdf_path, bbox_inches='tight')
-    print(f"✅ PDF版本已保存到: {pdf_path}")
-    
+    print(f"✅ 损失/精度曲线已保存到: {output_path}")
     plt.close()
     
     # 打印统计信息
