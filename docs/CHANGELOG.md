@@ -1,8 +1,22 @@
 # CHANGELOG
 
-This file consolidates recent updates and code-change notes (V4 optimization round). It is a curated, human-friendly timeline and summary—original detailed docs are archived under `docs/archive/`.
+This file consolidates recent updates and code-change notes. It is a curated, human-friendly timeline and summary—original detailed docs are archived under `docs/archive/`.
 
 ## Summary (Top-level)
+
+### V5 — Causal-FiLM Implementation (2025-11-10)
+
+- **Major Architectural Shift**: Transitioned from supervised contrastive learning to unsupervised anomaly detection
+- **Model**: Implemented Causal-FiLM (Causal-Hierarchical Fusion with Sensor-Modulation)
+- **Key Innovation**: 
+  - L1: FiLM sensor modulation (gamma/beta conditioning)
+  - L2: Causal hierarchical encoders (Process + Result)
+  - L3: Anti-generalization decoder with Linear Attention
+  - L4: Reconstruction loss + CLIP text constraint
+- **Training**: Only normal samples used (unsupervised anomaly detection paradigm)
+- **Evaluation**: Anomaly scores via reconstruction error (1 - cosine_similarity)
+
+### V4 — Early Stop & Feature-Level MixUp (2025-10-21)
 
 - Date: 2025-10-21
 - Release: V4 — Early Stop & Feature-Level MixUp
@@ -16,6 +30,32 @@ This file consolidates recent updates and code-change notes (V4 optimization rou
 
 ## Timeline
 
+### 2025-11-10 — Causal-FiLM Implementation
+
+- **New Modules**:
+  - `src/models/film_modulation.py`: SensorModulator with GRU-based FiLM parameter generation
+  - `src/models/causal_encoders.py`: ProcessEncoder (cross-attention) + ResultEncoder (MLP)
+  - `src/models/causal_decoder.py`: CausalDecoder with LinearAttention and NoisyBottleneck
+  - `src/models/causal_film_model.py`: Complete Causal-FiLM architecture (L0-L3)
+  
+- **New Loss Functions**:
+  - `src/losses.py`: Added ReconstructionLoss, CLIPTextLoss, CausalFILMLoss
+  
+- **New Training/Evaluation**:
+  - `src/train_causal_film.py`: Unsupervised training (normal samples only)
+  - `src/evaluate_causal_film.py`: Anomaly detection metrics
+    - **I-AUROC**: Image-level detection AUROC
+    - **P-AUPRO**: Pixel-level segmentation AUPRO (Per-Region Overlap)
+    - Supports multiple FPR thresholds (@0.3, @0.1, @0.05, @0.01)
+  
+- **Configuration**:
+  - `configs/model_config.py`: Added CAUSAL_FILM_CONFIG
+  - `configs/train_config.py`: Added lambda_text parameter
+  
+- **Scripts**:
+  - `scripts/train_causal_film.sh`: Training script for Causal-FiLM
+  - `scripts/evaluate_causal_film.sh`: Evaluation script for Causal-FiLM
+
 - 2025-10-21 15:00 — V4 strategy implemented
   - Add Feature-Level MixUp
   - Adjust LR scheduling and warmup
@@ -28,6 +68,30 @@ This file consolidates recent updates and code-change notes (V4 optimization rou
   - Updated docs and verification scripts
 
 ## Code-level highlights
+
+### V5 (Causal-FiLM)
+
+- **Architecture Design**:
+  - Frozen backbones (V-JEPA, DINOv2, AST) for feature extraction
+  - Lightweight trainable components (~1-2M parameters)
+  - Unified feature dimension (d_model=128)
+  - FiLM modulation: sensor data as context, not fusion target
+  - Causal hierarchy: Process (video+audio) → Result (images)
+  - Anti-generalization: Linear attention + noisy bottleneck prevents overfitting to anomalies
+
+- **Loss Function**:
+  - L_total = L_recon + λ * L_text
+  - L_recon: Cosine distance between Z_result and Z_result_pred
+  - L_text: CLIP-based semantic constraint ("a normal weld")
+  - λ = 0.1 (default)
+
+- **Training Strategy**:
+  - Only normal samples in training set
+  - Test set includes both normal and anomalies
+  - Anomaly score = 1 - cos_sim(Z_result, Z_result_pred)
+  - Higher score = anomaly
+
+### V4 (SupCon + MixUp)
 
 - configs/train_config.py
   - Added/kept: `use_mixup`, `mixup_alpha`, `early_stopping_patience`, altered lr/warmup/min_lr/weight_decay
@@ -45,6 +109,18 @@ This file consolidates recent updates and code-change notes (V4 optimization rou
   - Script added/updated to verify critical config keys and V4 readiness
 
 ## How to use
+
+### For Causal-FiLM (V5)
+
+```bash
+# Training
+bash scripts/train_causal_film.sh
+
+# Evaluation
+bash scripts/evaluate_causal_film.sh /path/to/checkpoint.pth
+```
+
+### For SupCon (V4)
 
 - Keep top-level docs small. Recommended docs to read:
   - `README.md` (root)

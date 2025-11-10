@@ -123,6 +123,15 @@ class ImageEncoder(nn.Module):
         elif self.aggregation == "concat":
             # Concatenate along sequence dimension
             features = features.reshape(B, N * seq_len, self.embed_dim)
+        elif self.aggregation == "none":
+            # Do not aggregate across angles here; return per-view pooled features.
+            # Pool over sequence dimension (take CLS token or mean over patches).
+            # Prefer CLS token at index 0 if available.
+            try:
+                features = features[:, :, 0, :]
+            except Exception:
+                features = features.mean(dim=2)
+            # Resulting shape: (B, N, embed_dim)
         else:
             raise ValueError(f"Unknown aggregation: {self.aggregation}")
         

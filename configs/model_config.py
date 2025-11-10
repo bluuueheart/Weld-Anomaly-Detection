@@ -53,3 +53,12 @@ FUSION = {
 
 # Output config
 NUM_CLASSES = 12  # Updated from 6 to match actual dataset (12 categories)
+
+# Causal-FiLM config
+CAUSAL_FILM_CONFIG = {
+    "d_model": 128,  # Unified feature dimension
+    "sensor_input_dim": 6,  # Sensor input channels
+    "sensor_hidden_dim": 64,  # GRU hidden dimension
+    "decoder_num_layers": 2,  # Number of decoder layers
+    "decoder_dropout": 0.2,  # Noisy bottleneck dropout
+}

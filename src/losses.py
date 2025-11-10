@@ -1,8 +1,9 @@
 """
 Loss functions for quad-modal welding anomaly detection.
 
-Implements Supervised Contrastive Loss (SupConLoss) for learning
-discriminative feature representations.
+Implements:
+- Supervised Contrastive Loss (SupConLoss) for learning discriminative features
+- Causal-FiLM Loss (reconstruction + CLIP text constraint) for anomaly detection
 """
 
 import torch
@@ -165,6 +166,202 @@ class CombinedLoss(nn.Module):
             total_loss = total_loss + self.ce_weight * loss_ce
             loss_dict['total'] = total_loss
             loss_dict['ce'] = loss_ce.item()
+        
+        return loss_dict
+
+
+class ReconstructionLoss(nn.Module):
+    """
+    Reconstruction loss using cosine distance.
+    
+    Used in Causal-FiLM to measure reconstruction error between
+    Z_result (ground truth) and Z_result_pred (reconstructed).
+    
+    Formula: L_recon = 1 - cosine_similarity(Z_result, Z_result_pred)
+    """
+    
+    def __init__(self):
+        super().__init__()
+    
+    def forward(
+        self,
+        Z_result: torch.Tensor,
+        Z_result_pred: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute reconstruction loss.
+        
+        Args:
+            Z_result: Ground truth result encoding (B, d_model)
+            Z_result_pred: Reconstructed result encoding (B, d_model)
+            
+        Returns:
+            loss: Scalar reconstruction loss
+        """
+        # Cosine distance = 1 - cosine_similarity
+        cos_sim = F.cosine_similarity(Z_result, Z_result_pred, dim=1)
+        loss = 1.0 - cos_sim.mean()
+        return loss
+
+
+class CLIPTextLoss(nn.Module):
+    """
+    CLIP-based text constraint loss.
+    
+    Forces reconstructed features to be semantically close to "a normal weld"
+    in CLIP's joint vision-language space. This is a class-agnostic global
+    constraint that prevents the decoder from reconstructing anomalies.
+    
+    Args:
+        clip_model_name: CLIP model name (default: "ViT-B/32")
+        text_prompt: Text prompt for normal class (default: "a normal weld")
+        device: Device to load CLIP model
+    """
+    
+    def __init__(
+        self,
+        clip_model_name: str = "ViT-B/32",
+        text_prompt: str = "a normal weld",
+        device: str = "cuda",
+    ):
+        super().__init__()
+        
+        self.text_prompt = text_prompt
+        self.device = device
+        
+        # Load CLIP model (frozen)
+        try:
+            import clip
+            self.clip_model, _ = clip.load(clip_model_name, device=device)
+            self.clip_model.eval()
+            for param in self.clip_model.parameters():
+                param.requires_grad = False
+            
+            # Encode text prompt (done once)
+            with torch.no_grad():
+                text_tokens = clip.tokenize([text_prompt]).to(device)
+                self.text_features = self.clip_model.encode_text(text_tokens)
+                self.text_features = F.normalize(self.text_features, p=2, dim=-1)
+            
+            self.clip_dim = self.text_features.shape[-1]  # 512 for ViT-B/32
+            self.clip_available = True
+            
+        except ImportError:
+            print("Warning: CLIP not available. CLIPTextLoss will return zero.")
+            self.clip_available = False
+            self.clip_dim = 512
+        
+        # Projection head: d_model -> CLIP dimension
+        # This is the only trainable component
+        self.vision_projection = nn.Sequential(
+            nn.Linear(128, 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(256, self.clip_dim),
+        ).to(device)  # Move to same device as CLIP model
+    
+    def forward(self, Z_result_pred: torch.Tensor) -> torch.Tensor:
+        """
+        Compute CLIP text constraint loss.
+        
+        Args:
+            Z_result_pred: Reconstructed result encoding (B, d_model)
+            
+        Returns:
+            loss: Scalar CLIP text loss
+        """
+        if not self.clip_available:
+            return torch.tensor(0.0, device=Z_result_pred.device)
+        
+        # Project to CLIP space
+        pred_clip_features = self.vision_projection(Z_result_pred)  # (B, clip_dim)
+        pred_clip_features = F.normalize(pred_clip_features, p=2, dim=-1)
+        
+        # Compute cosine distance to text features
+        # text_features: (1, clip_dim) -> broadcast to (B, clip_dim)
+        cos_sim = F.cosine_similarity(
+            pred_clip_features,
+            self.text_features.expand(pred_clip_features.size(0), -1),
+            dim=1
+        )
+        
+        # Loss = 1 - similarity (we want high similarity)
+        loss = 1.0 - cos_sim.mean()
+        return loss
+
+
+class CausalFILMLoss(nn.Module):
+    """
+    Combined loss for Causal-FiLM model.
+    
+    L_total = L_recon + λ * L_text
+    
+    Where:
+        - L_recon: Reconstruction loss (cosine distance)
+        - L_text: CLIP text constraint loss
+        - λ: Weighting parameter (default: 0.1)
+    
+    Args:
+        lambda_text: Weight for CLIP text loss (default: 0.1)
+        clip_model_name: CLIP model name (default: "ViT-B/32")
+        text_prompt: Text prompt for normal class (default: "a normal weld")
+        device: Device for CLIP model
+    """
+    
+    def __init__(
+        self,
+        lambda_text: float = 0.1,
+        clip_model_name: str = "ViT-B/32",
+        text_prompt: str = "a normal weld",
+        device: str = "cuda",
+    ):
+        super().__init__()
+        
+        self.lambda_text = lambda_text
+        
+        # Reconstruction loss
+        self.recon_loss = ReconstructionLoss()
+        
+        # CLIP text constraint loss
+        self.clip_text_loss = CLIPTextLoss(
+            clip_model_name=clip_model_name,
+            text_prompt=text_prompt,
+            device=device,
+        )
+    
+    def forward(
+        self,
+        Z_result: torch.Tensor,
+        Z_result_pred: torch.Tensor,
+    ) -> dict:
+        """
+        Compute combined Causal-FiLM loss.
+        
+        Args:
+            Z_result: Ground truth result encoding (B, d_model)
+            Z_result_pred: Reconstructed result encoding (B, d_model)
+            
+        Returns:
+            loss_dict: Dictionary containing:
+                - 'total': Total loss
+                - 'recon': Reconstruction loss
+                - 'clip_text': CLIP text constraint loss
+        """
+        # Reconstruction loss
+        loss_recon = self.recon_loss(Z_result, Z_result_pred)
+        
+        # CLIP text loss
+        loss_clip_text = self.clip_text_loss(Z_result_pred)
+        
+        # Total loss
+        total_loss = loss_recon + self.lambda_text * loss_clip_text
+        
+        loss_dict = {
+            'total': total_loss,
+            'recon': loss_recon.item(),
+            'clip_text': loss_clip_text.item(),
+        }
         
         return loss_dict
 

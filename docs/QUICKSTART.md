@@ -1,21 +1,253 @@
 # 快速开始指南 (Quick Start Guide)
 
-> **项目**: 四模态焊接缺陷检测 - 基于监督对比学习的深度融合网络  
-> **更新时间**: 2025年10月10日
+> **项目**: 四模态焊接缺陷检测 - Causal-FiLM无监督异常检测  
+> **更新时间**: 2025年11月10日
 
 ---
 
 ## 📋 目录
 
 1. [环境准备](#1-环境准备)
-2. [环境检查](#2-环境检查)
-3. [模块测试](#3-模块测试)
-4. [完整测试](#4-完整测试)
-5. [训练模型](#5-训练模型)
-6. [预期输出](#6-预期输出)
-7. [故障排查](#7-故障排查)
+2. [模型选择](#2-模型选择)
+3. [Causal-FiLM使用指南](#3-causal-film使用指南)
+4. [SupCon使用指南](#4-supcon使用指南)
+5. [预期输出](#5-预期输出)
+6. [故障排查](#6-故障排查)
 
 ---
+
+## 1. 环境准备
+
+### 1.1 系统要求
+
+- Python 3.8+
+- CUDA 11.0+ (GPU推荐)
+- 16GB+ RAM
+- 50GB+ 磁盘空间
+
+### 1.2 安装依赖
+
+```bash
+# 克隆仓库
+git clone https://github.com/yourusername/Weld-Anomaly-Detection.git
+cd Weld-Anomaly-Detection
+
+# 创建虚拟环境
+conda create -n weld-ad python=3.9
+conda activate weld-ad
+
+# 安装PyTorch (根据你的CUDA版本)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+# 安装其他依赖
+pip install -r requirements.txt
+
+# 安装CLIP (用于Causal-FiLM)
+pip install git+https://github.com/openai/CLIP.git
+```
+
+### 1.3 数据准备
+
+将数据集放置在 `Data/` 目录下，结构如下：
+
+```
+Data/
+├── 1_good_weld_1_02-09-23_Fe410/
+├── 2_good_weld_2_02-09-23_Fe410/
+├── 4_porosity_w_excessive_penetration/
+└── ...
+```
+
+---
+
+## 2. 模型选择
+
+本项目提供两种模型架构：
+
+| 模型 | 类型 | 训练数据 | 优势 | 使用场景 |
+|------|------|----------|------|----------|
+| **Causal-FiLM** (V5) | 无监督异常检测 | 仅正常样本 | 无需标注异常，泛化性强 | **推荐**：异常样本稀缺 |
+| **SupCon** (V4) | 监督对比学习 | 正常+异常样本 | 分类精度高 | 异常样本充足 |
+
+---
+
+## 3. Causal-FiLM使用指南
+
+### 3.1 架构概述
+
+Causal-FiLM是**无监督异常检测**模型，通过重建学习检测异常：
+
+- **L0**: 冻结的特征提取器 (V-JEPA, DINOv2, AST)
+- **L1**: FiLM传感器调制 (gamma/beta conditioning)
+- **L2**: 因果分层编码器 (Process + Result)
+- **L3**: 反泛化解码器 (Linear Attention)
+- **L4**: 重建损失 + CLIP文本约束
+
+**核心思想**: 只学习"正常"的因果映射 `f: Process → Result`，异常会产生大的重建误差。
+
+### 3.2 快速训练
+
+```bash
+# 使用默认配置训练
+bash scripts/train_causal_film.sh
+
+# 或直接运行Python
+python src/train_causal_film.py
+```
+
+**训练参数** (在 `configs/train_config.py` 中配置):
+
+- `batch_size`: 32
+- `num_epochs`: 100
+- `learning_rate`: 2e-5
+- `lambda_text`: 0.1 (CLIP损失权重)
+- `early_stopping_patience`: 8
+
+### 3.3 评估
+
+```bash
+# 在测试集上评估
+bash scripts/evaluate_causal_film.sh /path/to/best_model.pth
+
+# 查看结果
+cat /root/autodl-tmp/outputs/eval_results.json
+```
+
+**输出指标**:
+- `I-AUROC`: 图像级检测AUROC (Image-level Detection)
+- `P-AUPRO@0.3`: 像素级分割AUPRO，FPR≤30% (Pixel-level Segmentation)
+- `P-AUPRO@0.1`: 像素级分割AUPRO，FPR≤10%
+- `P-AUPRO@0.01`: 像素级分割AUPRO，FPR≤1%
+- `precision`, `recall`, `f1`: 在最优阈值下的分类指标
+
+### 3.4 推理流程
+
+```python
+import torch
+from src.models import create_causal_film_model
+
+# 加载模型
+model_config = {...}  # 见configs/model_config.py
+model = create_causal_film_model(model_config)
+checkpoint = torch.load("best_model.pth")
+model.load_state_dict(checkpoint["model_state_dict"])
+model.eval()
+
+# 推理
+with torch.no_grad():
+    output = model(batch)
+    anomaly_score = model.compute_anomaly_score(
+        output["Z_result"],
+        output["Z_result_pred"]
+    )
+    # score > threshold → anomaly
+```
+
+---
+
+## 4. SupCon使用指南
+
+### 4.1 训练
+
+```bash
+# 使用SupCon训练
+bash scripts/train.sh
+```
+
+### 4.2 评估
+
+```bash
+# k-NN评估
+bash scripts/evaluate.sh
+```
+
+---
+
+## 5. 预期输出
+
+### 5.1 Causal-FiLM训练输出
+
+```
+======================================================================
+INITIALIZING CAUSAL-FILM MODEL
+======================================================================
+  Total parameters: 45,234,567
+  Trainable parameters: 2,345,678
+  Output dimension: 128
+  Device: cuda
+
+======================================================================
+STARTING TRAINING
+======================================================================
+
+Epoch 1/100
+----------------------------------------------------------------------
+  Epoch 1 [10/50] Loss: 0.3456
+  Epoch 1 [20/50] Loss: 0.2987
+  ...
+  Train Loss: 0.2543 (Recon: 0.2134, CLIP: 0.0409)
+  Val Loss: 0.2876 (Recon: 0.2456, CLIP: 0.0420)
+  Mean Anomaly Score: 0.1234
+  ✅ New best model! Val Loss: 0.2876
+
+Epoch 2/100
+----------------------------------------------------------------------
+  ...
+```
+
+### 5.2 评估输出
+
+```
+======================================================================
+EVALUATING ON TEST SPLIT
+======================================================================
+
+Extracting anomaly scores...
+  Processed 50/50 batches
+  Total samples: 1600
+  Normal samples: 800
+  Anomaly samples: 800
+
+Computing metrics...
+  I-AUROC (Image-level Detection): 0.9235
+  AP: 0.9104
+  Optimal Threshold: 0.3456
+  Precision: 0.8765
+  Recall: 0.8654
+  F1: 0.8709
+
+  Computing P-AUPRO (Pixel-level Segmentation)...
+    P-AUPRO@0.3: 0.9123
+    P-AUPRO@0.1: 0.8876
+    P-AUPRO@0.05: 0.8234
+    P-AUPRO@0.01: 0.7654
+```
+
+---
+
+## 6. 故障排查
+
+### 6.1 CLIP导入错误
+
+```bash
+# 错误: No module named 'clip'
+pip install git+https://github.com/openai/CLIP.git
+```
+
+### 6.2 CUDA内存不足
+
+```python
+# 在train_config.py中减小batch_size
+"batch_size": 16,  # 从32减到16
+```
+
+### 6.3 找不到正常样本
+
+确保数据集中有标签包含"good"或"normal"的样本，或在`train_causal_film.py`中调整过滤逻辑。
+
+---
+
+## 附录: 原SupCon测试输出
 
 ```
 ======================================================================
