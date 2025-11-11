@@ -13,6 +13,7 @@ echo ""
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
 
 # Training command
+# To resume from a checkpoint, add: --resume /root/autodl-tmp/outputs/checkpoints/latest_model.pth
 python src/train_causal_film.py \
     --config configs/train_config.py
 

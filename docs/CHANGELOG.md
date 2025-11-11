@@ -30,6 +30,66 @@ This file consolidates recent updates and code-change notes. It is a curated, hu
 
 ## Timeline
 
+### 2025-11-11 — Evaluation Metrics Refactoring
+
+#### Problem Identified
+- **Issue**: P-AUROC 与 I-AUROC 值完全相同，引发对指标准确性的质疑
+- **Root Causes**:
+  1. 数据集只有图像级标签（正常/异常），无像素级缺陷掩码
+  2. 模型输出全局嵌入向量，无空间特征图
+  3. 像素级异常图使用全局分数均匀填充，无真实空间变化
+  4. P-AUROC/P-AUPRO 基于图像级标签的近似计算，不反映真实像素定位能力
+
+#### Solution: Remove Unreliable Pixel-Level Metrics
+
+**Removed Metrics** (不准确的近似值):
+- ❌ P-AUROC (Pixel-level AUROC)
+- ❌ P-AUPRO@30% / @10% / @5% / @1%
+- ❌ `_generate_pixel_anomaly_maps()` 方法
+- ❌ `compute_pro_metric()` 方法
+- ❌ `compute_metrics_with_pro()` 方法
+
+**Implemented Reliable Image-Level Metrics**:
+- ✅ **I-AUROC / AUC**: Area Under ROC Curve (主指标)
+- ✅ **I-AP / I-mAP**: Average Precision
+- ✅ **Accuracy (Acc)**: Overall classification accuracy
+- ✅ **F1-Score (F1)**: Harmonic mean of precision and recall
+- ✅ **FDR**: False Discovery Rate = FP / (FP + TP)
+- ✅ **MDR**: Missed Detection Rate = FN / (FN + TP)
+- ✅ **Precision / Recall**: At optimal threshold (Youden's J)
+- ✅ **Confusion Matrix**: TP, FP, TN, FN
+
+#### Code Changes
+
+**File: `src/evaluate_causal_film.py`**
+- Simplified `extract_anomaly_scores()`: 只提取图像级分数
+- Rewrote `compute_metrics()`: 计算可靠的图像级指标
+- Updated output format: 清晰展示所有图像级指标
+- Removed pixel-level approximations: 删除所有不可靠的像素级计算
+
+**Documentation Updates**:
+- File header: 明确说明只计算图像级指标
+- Removed confusing disclaimers about P-AUROC/P-AUPRO
+- Focus on reliable metrics for image-level anomaly detection
+
+#### Why This Is Correct
+
+**可靠的指标** (Image-Level):
+- I-AUROC 准确反映模型区分正常/异常图像的能力
+- 有明确的图像级标签作为ground truth
+- 标准的二分类评估方法
+
+**不可靠的指标** (Pixel-Level):
+- 需要像素级缺陷掩码（我们没有）
+- 基于图像级标签的近似 → 无法评估定位能力
+- P-AUROC ≈ I-AUROC 是必然结果，不是bug
+
+#### Future Work (如需像素级评估)
+1. 标注像素级缺陷分割掩码
+2. 修改模型保留空间特征（patch-level features）
+3. 计算每个patch的重建误差
+4. 使用注意力图进行弱监督定位
+
 ### 2025-11-10 — Causal-FiLM Implementation
 
 - **New Modules**:

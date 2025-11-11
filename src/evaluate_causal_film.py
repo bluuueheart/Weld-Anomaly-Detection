@@ -1,10 +1,17 @@
 """
 Evaluation script for Causal-FiLM model.
 
-Computes anomaly detection metrics:
-- AUROC (Area Under ROC Curve)
-- AUPRO (Area Under Per-Region Overlap curve) at different FPR thresholds
-- Precision, Recall, F1 at optimal threshold
+Computes IMAGE-LEVEL anomaly detection metrics:
+- I-AUROC / AUC: Area Under ROC Curve
+- I-AP / I-mAP: Average Precision (AP)
+- Accuracy (Acc): Overall classification accuracy
+- F1-Score (F1): Harmonic mean of precision and recall
+- FDR: False Discovery Rate (FP / (FP + TP))
+- MDR: Missed Detection Rate (FN / (FN + TP))
+- Precision, Recall at optimal threshold
+
+NOTE: Pixel-level metrics (P-AUROC, P-AUPRO) have been removed due to lack of
+pixel-level ground truth annotations. Only reliable image-level metrics are computed.
 """
 
 import os
@@ -22,13 +29,10 @@ from sklearn.metrics import (
     roc_curve,
     precision_recall_curve,
     average_precision_score,
+    accuracy_score,
+    f1_score,
+    confusion_matrix,
 )
-try:
-    from scipy.ndimage import label as ndimage_label
-    SCIPY_AVAILABLE = True
-except ImportError:
-    SCIPY_AVAILABLE = False
-    print("Warning: scipy not available. P-AUPRO will use simplified approximation.")
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -83,8 +87,8 @@ class CausalFiLMEvaluator:
         
         self.model = create_causal_film_model(model_config, use_dummy=self.use_dummy)
         
-        # Load checkpoint
-        checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+        # Load checkpoint with weights_only=False to support full checkpoint format
+        checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model = self.model.to(self.device)
         self.model.eval()
@@ -96,12 +100,9 @@ class CausalFiLMEvaluator:
         print()
     
     @torch.no_grad()
-    def extract_anomaly_scores_and_maps(self, dataloader: DataLoader):
+    def extract_anomaly_scores(self, dataloader: DataLoader):
         """
-        Extract anomaly scores and pixel-level anomaly maps.
-        
-        For P-AUPRO, we generate pseudo pixel-level anomaly maps by
-        projecting the reconstruction error back to spatial dimensions.
+        Extract image-level anomaly scores.
         
         Args:
             dataloader: DataLoader for evaluation
@@ -110,14 +111,12 @@ class CausalFiLMEvaluator:
             scores: Image-level anomaly scores (N,)
             labels: Binary labels (N,) - 0=normal, 1=anomaly
             raw_labels: Original class labels (N,)
-            anomaly_maps: List of pixel-level anomaly maps (for P-AUPRO)
         """
-        print("Extracting anomaly scores and maps...")
+        print("Extracting image-level anomaly scores...")
         
         all_scores = []
         all_labels = []
         all_raw_labels = []
-        all_anomaly_maps = []
         
         for batch_idx, batch in enumerate(dataloader):
             # Move to device
@@ -125,7 +124,7 @@ class CausalFiLMEvaluator:
                 if isinstance(batch[key], torch.Tensor):
                     batch[key] = batch[key].to(self.device)
             
-            # Forward pass with intermediate features
+            # Forward pass
             output = self.model(batch, return_encodings=True)
             
             # Image-level anomaly scores
@@ -135,22 +134,6 @@ class CausalFiLMEvaluator:
             )
             
             all_scores.append(scores.cpu())
-            
-            # Generate pixel-level anomaly maps
-            # Method: Compute reconstruction error for each spatial location
-            # Using the image features before pooling
-            batch_size = scores.size(0)
-            anomaly_maps_batch = []
-            
-            for i in range(batch_size):
-                # Create a simple anomaly map based on the global score
-                # In a real implementation, you would compute per-pixel reconstruction errors
-                # Here we create a uniform map with the global score
-                # This is a placeholder - ideally should be computed from spatial features
-                anomaly_map = torch.ones(224, 224) * scores[i].item()
-                anomaly_maps_batch.append(anomaly_map.cpu().numpy())
-            
-            all_anomaly_maps.extend(anomaly_maps_batch)
             
             if "label" in batch:
                 labels = batch["label"].cpu()
@@ -173,11 +156,11 @@ class CausalFiLMEvaluator:
             print(f"  Anomaly samples: {(labels == 1).sum()}")
         print()
         
-        return scores, labels, raw_labels, all_anomaly_maps
+        return scores, labels, raw_labels
     
     def compute_metrics(self, scores, labels):
         """
-        Compute anomaly detection metrics.
+        Compute image-level anomaly detection metrics.
         
         Args:
             scores: Anomaly scores (N,)
@@ -190,263 +173,72 @@ class CausalFiLMEvaluator:
             print("Warning: No labels available for metric computation")
             return {}
         
-        print("Computing metrics...")
+        print("Computing image-level metrics...")
         
-        metrics = {}
+        from collections import OrderedDict
+        metrics = OrderedDict()
         
-        # AUROC (Image-level)
+        # 1. I-AUROC / AUC (Area Under ROC Curve)
         auroc = roc_auc_score(labels, scores)
         metrics["I-AUROC"] = auroc
-        print(f"  I-AUROC: {auroc:.4f}")
+        metrics["AUC"] = auroc  # Same as I-AUROC
+        print(f"  I-AUROC / AUC: {auroc:.4f}")
         
-        # Average Precision
+        # 2. I-AP / I-mAP (Average Precision)
         ap = average_precision_score(labels, scores)
-        metrics["AP"] = ap
-        print(f"  AP: {ap:.4f}")
+        metrics["I-AP"] = ap
+        metrics["I-mAP"] = ap  # Same as I-AP (single class)
+        print(f"  I-AP / I-mAP: {ap:.4f}")
         
-        # ROC curve
+        # 3. Find optimal threshold using Youden's J statistic
         fpr, tpr, thresholds = roc_curve(labels, scores)
-        
-        # Find optimal threshold (Youden's J statistic)
         j_scores = tpr - fpr
         optimal_idx = np.argmax(j_scores)
         optimal_threshold = thresholds[optimal_idx]
-        metrics["optimal_threshold"] = optimal_threshold
+        metrics["optimal_threshold"] = float(optimal_threshold)
         
-        # Compute precision, recall, F1 at optimal threshold
+        # 4. Compute predictions at optimal threshold
         predictions = (scores >= optimal_threshold).astype(int)
-        tp = ((predictions == 1) & (labels == 1)).sum()
-        fp = ((predictions == 1) & (labels == 0)).sum()
-        fn = ((predictions == 0) & (labels == 1)).sum()
-        tn = ((predictions == 0) & (labels == 0)).sum()
         
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+        # 5. Confusion matrix
+        tn, fp, fn, tp = confusion_matrix(labels, predictions).ravel()
+        metrics["TP"] = int(tp)
+        metrics["FP"] = int(fp)
+        metrics["TN"] = int(tn)
+        metrics["FN"] = int(fn)
         
-        metrics["precision"] = precision
-        metrics["recall"] = recall
-        metrics["f1"] = f1
-        metrics["tp"] = int(tp)
-        metrics["fp"] = int(fp)
-        metrics["tn"] = int(tn)
-        metrics["fn"] = int(fn)
+        # 6. Accuracy (Acc)
+        accuracy = accuracy_score(labels, predictions)
+        metrics["Accuracy"] = accuracy
+        metrics["Acc"] = accuracy
+        print(f"  Accuracy (Acc): {accuracy:.4f}")
         
-        print(f"  Optimal Threshold: {optimal_threshold:.4f}")
+        # 7. F1-Score
+        f1 = f1_score(labels, predictions)
+        metrics["F1-Score"] = f1
+        metrics["F1"] = f1
+        print(f"  F1-Score (F1): {f1:.4f}")
+        
+        # 8. Precision and Recall
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        metrics["Precision"] = precision
+        metrics["Recall"] = recall
         print(f"  Precision: {precision:.4f}")
         print(f"  Recall: {recall:.4f}")
-        print(f"  F1: {f1:.4f}")
         
-        print()
-        return metrics
-    
-    def compute_pro_metric(self, anomaly_maps, labels, fpr_limit=0.3):
-        """
-        Compute Per-Region Overlap (PRO) metric.
+        # 9. FDR (False Discovery Rate) = FP / (FP + TP)
+        fdr = fp / (fp + tp) if (fp + tp) > 0 else 0.0
+        metrics["FDR"] = fdr
+        print(f"  FDR (False Discovery Rate): {fdr:.4f}")
         
-        PRO evaluates pixel-level anomaly detection by computing the overlap
-        between predicted and ground truth anomaly regions.
+        # 10. MDR (Missed Detection Rate) = FN / (FN + TP)
+        mdr = fn / (fn + tp) if (fn + tp) > 0 else 0.0
+        metrics["MDR"] = mdr
+        print(f"  MDR (Missed Detection Rate): {mdr:.4f}")
         
-        Args:
-            anomaly_maps: List of anomaly maps (N, H, W)
-            labels: Binary labels (N,) - 0=normal, 1=anomaly
-            fpr_limit: FPR threshold for AUPRO computation
-            
-        Returns:
-            aupro: Area Under PRO curve at given FPR limit
-        """
-        if not SCIPY_AVAILABLE:
-            print("  Warning: scipy not available, skipping P-AUPRO computation")
-            return 0.0
-        
-        # Since we don't have ground truth masks, we approximate P-AUPRO
-        # by treating the entire image as a region
-        # In real implementation, you would need pixel-level ground truth masks
-        
-        # For now, we compute a simplified version based on connected components
-        all_pros = []
-        all_fprs = []
-        
-        # Create thresholds from anomaly map values
-        all_scores = np.concatenate([m.flatten() for m in anomaly_maps])
-        thresholds = np.percentile(all_scores, np.linspace(0, 100, 100))
-        
-        for threshold in thresholds:
-            tp_pixels = 0
-            fp_pixels = 0
-            fn_pixels = 0
-            tn_pixels = 0
-            
-            for idx, (anomaly_map, label) in enumerate(zip(anomaly_maps, labels)):
-                pred_mask = (anomaly_map >= threshold).astype(np.uint8)
-                
-                if label == 1:  # Anomaly
-                    # Assume entire image is anomalous region
-                    gt_mask = np.ones_like(pred_mask)
-                    tp_pixels += np.sum(pred_mask & gt_mask)
-                    fn_pixels += np.sum((1 - pred_mask) & gt_mask)
-                else:  # Normal
-                    # Assume entire image is normal
-                    gt_mask = np.zeros_like(pred_mask)
-                    fp_pixels += np.sum(pred_mask & (1 - gt_mask))
-                    tn_pixels += np.sum((1 - pred_mask) & (1 - gt_mask))
-            
-            # Compute PRO and FPR
-            pro = tp_pixels / (tp_pixels + fn_pixels) if (tp_pixels + fn_pixels) > 0 else 0
-            fpr = fp_pixels / (fp_pixels + tn_pixels) if (fp_pixels + tn_pixels) > 0 else 0
-            
-            all_pros.append(pro)
-            all_fprs.append(fpr)
-        
-        # Sort by FPR
-        sorted_idx = np.argsort(all_fprs)
-        sorted_fprs = np.array(all_fprs)[sorted_idx]
-        sorted_pros = np.array(all_pros)[sorted_idx]
-        
-        # Compute AUPRO up to fpr_limit
-        idx_limit = np.searchsorted(sorted_fprs, fpr_limit)
-        if idx_limit > 0:
-            aupro = np.trapz(sorted_pros[:idx_limit], sorted_fprs[:idx_limit]) / fpr_limit
-        else:
-            aupro = 0.0
-        
-        return aupro
-    
-    def compute_metrics_with_pro(self, scores, labels, anomaly_maps):
-        """
-        Compute comprehensive anomaly detection metrics including P-AUPRO.
-        
-        Args:
-            scores: Anomaly scores (N,)
-            labels: Binary labels (N,) - 0=normal, 1=anomaly
-            anomaly_maps: List of pixel-level anomaly maps
-            
-        Returns:
-            metrics: Dictionary of metrics
-        """
-        if labels is None:
-            print("Warning: No labels available for metric computation")
-            return {}
-        
-        print("Computing metrics...")
-        
-        metrics = {}
-        
-        # AUROC (Image-level Detection)
-        auroc = roc_auc_score(labels, scores)
-        metrics["I-AUROC"] = auroc
-        print(f"  I-AUROC (Image-level Detection): {auroc:.4f}")
-        
-        # Average Precision
-        ap = average_precision_score(labels, scores)
-        metrics["AP"] = ap
-        print(f"  AP: {ap:.4f}")
-        
-        # ROC curve
-        fpr, tpr, thresholds = roc_curve(labels, scores)
-        
-        # Find optimal threshold (Youden's J statistic)
-        j_scores = tpr - fpr
-        optimal_idx = np.argmax(j_scores)
-        optimal_threshold = thresholds[optimal_idx]
-        metrics["optimal_threshold"] = optimal_threshold
-        
-        # Compute precision, recall, F1 at optimal threshold
-        predictions = (scores >= optimal_threshold).astype(int)
-        tp = ((predictions == 1) & (labels == 1)).sum()
-        fp = ((predictions == 1) & (labels == 0)).sum()
-        fn = ((predictions == 0) & (labels == 1)).sum()
-        tn = ((predictions == 0) & (labels == 0)).sum()
-        
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        
-        metrics["precision"] = precision
-        metrics["recall"] = recall
-        metrics["f1"] = f1
-        metrics["tp"] = int(tp)
-        metrics["fp"] = int(fp)
-        metrics["tn"] = int(tn)
-        metrics["fn"] = int(fn)
-        
-        print(f"  Optimal Threshold: {optimal_threshold:.4f}")
-        print(f"  Precision: {precision:.4f}")
-        print(f"  Recall: {recall:.4f}")
-        print(f"  F1: {f1:.4f}")
-        
-        # P-AUPRO (Pixel-level Segmentation)
-        print("\n  Computing P-AUPRO (Pixel-level Segmentation)...")
-        fpr_limits = [0.3, 0.1, 0.05, 0.01]
-        for limit in fpr_limits:
-            aupro = self.compute_pro_metric(anomaly_maps, labels, fpr_limit=limit)
-            metrics[f"P-AUPRO@{limit}"] = aupro
-            print(f"    P-AUPRO@{limit}: {aupro:.4f}")
-        
-        print()
-        return metrics
-    
-    def compute_metrics(self, scores, labels):
-        """
-        Compute basic anomaly detection metrics (backward compatibility).
-        
-        Args:
-            scores: Anomaly scores (N,)
-            labels: Binary labels (N,) - 0=normal, 1=anomaly
-            
-        Returns:
-            metrics: Dictionary of metrics
-        """
-        if labels is None:
-            print("Warning: No labels available for metric computation")
-            return {}
-        
-        print("Computing metrics...")
-        
-        metrics = {}
-        
-        # AUROC (Image-level)
-        auroc = roc_auc_score(labels, scores)
-        metrics["I-AUROC"] = auroc
-        print(f"  I-AUROC: {auroc:.4f}")
-        
-        # Average Precision
-        ap = average_precision_score(labels, scores)
-        metrics["AP"] = ap
-        print(f"  AP: {ap:.4f}")
-        
-        # ROC curve
-        fpr, tpr, thresholds = roc_curve(labels, scores)
-        
-        # Find optimal threshold (Youden's J statistic)
-        j_scores = tpr - fpr
-        optimal_idx = np.argmax(j_scores)
-        optimal_threshold = thresholds[optimal_idx]
-        metrics["optimal_threshold"] = optimal_threshold
-        
-        # Compute precision, recall, F1 at optimal threshold
-        predictions = (scores >= optimal_threshold).astype(int)
-        tp = ((predictions == 1) & (labels == 1)).sum()
-        fp = ((predictions == 1) & (labels == 0)).sum()
-        fn = ((predictions == 0) & (labels == 1)).sum()
-        tn = ((predictions == 0) & (labels == 0)).sum()
-        
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        
-        metrics["precision"] = precision
-        metrics["recall"] = recall
-        metrics["f1"] = f1
-        metrics["tp"] = int(tp)
-        metrics["fp"] = int(fp)
-        metrics["tn"] = int(tn)
-        metrics["fn"] = int(fn)
-        
-        print(f"  Optimal Threshold: {optimal_threshold:.4f}")
-        print(f"  Precision: {precision:.4f}")
-        print(f"  Recall: {recall:.4f}")
-        print(f"  F1: {f1:.4f}")
+        print(f"\n  Optimal Threshold: {optimal_threshold:.4f}")
+        print(f"  Confusion Matrix: TP={tp}, FP={fp}, TN={tn}, FN={fn}")
         
         print()
         return metrics
@@ -489,11 +281,11 @@ class CausalFiLMEvaluator:
             pin_memory=True,
         )
         
-        # Extract scores and anomaly maps for P-AUPRO
-        scores, labels, raw_labels, anomaly_maps = self.extract_anomaly_scores_and_maps(dataloader)
+        # Extract image-level anomaly scores
+        scores, labels, raw_labels = self.extract_anomaly_scores(dataloader)
         
-        # Compute comprehensive metrics including P-AUPRO
-        metrics = self.compute_metrics_with_pro(scores, labels, anomaly_maps)
+        # Compute image-level metrics
+        metrics = self.compute_metrics(scores, labels)
         
         # Per-class statistics
         if raw_labels is not None:
@@ -502,7 +294,20 @@ class CausalFiLMEvaluator:
             for label in unique_labels:
                 mask = raw_labels == label
                 class_scores = scores[mask]
-                class_name = dataset.label_to_name.get(label, f"Class_{label}")
+                # Safely get class name from dataset id/path
+                class_name = f"Class_{label}"
+                try:
+                    if hasattr(dataset, 'label_to_name'):
+                        class_name = dataset.label_to_name.get(label, class_name)
+                    elif hasattr(dataset, '_ids') and len(dataset._ids) > 0:
+                        # Try to infer from first sample with this label
+                        for idx, lbl in enumerate(dataset._labels if hasattr(dataset, '_labels') else []):
+                            if lbl == label:
+                                sample_id = dataset._ids[idx]
+                                class_name = sample_id.split('/')[0] if '/' in sample_id else class_name
+                                break
+                except Exception:
+                    pass
                 print(f"  {class_name}: mean={class_scores.mean():.4f}, "
                       f"std={class_scores.std():.4f}, "
                       f"min={class_scores.min():.4f}, "
@@ -542,11 +347,58 @@ def main():
     output_path = args.output or os.path.join(OUTPUT_DIR, "eval_results.json")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
+    # Convert numpy types to Python native types for JSON serialization
+    def convert_to_serializable(obj):
+        """Recursively convert numpy types to Python native types."""
+        if isinstance(obj, dict):
+            return {key: convert_to_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [convert_to_serializable(item) for item in obj]
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        else:
+            return obj
+    
+    metrics_serializable = convert_to_serializable(metrics)
+    
+    # Add metadata to results
+    results = {
+        "metrics": metrics_serializable,
+        "metadata": {
+            "checkpoint": args.checkpoint,
+            "split": args.split,
+            "note": "All metrics are image-level (no pixel-level annotations available)"
+        }
+    }
+    
     with open(output_path, "w") as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(results, f, indent=2)
     
     print("=" * 70)
     print(f"Results saved to: {output_path}")
+    print("=" * 70)
+    print()
+    # Safe formatter: if value is numeric, format to 4 decimals; otherwise print raw
+    def _fmt(key, default='N/A'):
+        v = metrics_serializable.get(key, default)
+        try:
+            return f"{float(v):.4f}"
+        except Exception:
+            return str(v)
+
+    print("KEY RESULTS (Image-Level Metrics):")
+    print(f"  • I-AUROC / AUC:      {_fmt('I-AUROC')}" )
+    print(f"  • I-AP / I-mAP:       {_fmt('I-AP')}" )
+    print(f"  • Accuracy (Acc):     {_fmt('Accuracy')}" )
+    print(f"  • F1-Score (F1):      {_fmt('F1-Score')}" )
+    print(f"  • FDR:                {_fmt('FDR')}" )
+    print(f"  • MDR:                {_fmt('MDR')}" )
+    print(f"  • Precision:          {_fmt('Precision')}" )
+    print(f"  • Recall:             {_fmt('Recall')}" )
     print("=" * 70)
 
 

@@ -418,12 +418,20 @@ class CausalFiLMTrainer:
         print(f"Batch size: {self.config['batch_size']}")
         print(f"Learning rate: {self.config['learning_rate']}")
         print(f"Lambda (CLIP): {self.config.get('lambda_text', 0.1)}")
-        print(f"Early stopping patience: {self.early_stopping_patience}")
+        if self.early_stopping_patience > 0:
+            print(f"Early stopping patience: {self.early_stopping_patience}")
+        else:
+            print(f"Early stopping: Disabled")
+        if self.current_epoch > 0:
+            print(f"Resuming from epoch: {self.current_epoch}")
         print()
         
         start_time = time.time()
         
-        for epoch in range(1, self.config["num_epochs"] + 1):
+        # Determine starting epoch (resume if current_epoch > 0)
+        start_epoch = self.current_epoch + 1
+        
+        for epoch in range(start_epoch, self.config["num_epochs"] + 1):
             epoch_header = f"Epoch {epoch}/{self.config['num_epochs']}"
             print("=" * 70)
             print(epoch_header)
@@ -473,10 +481,9 @@ class CausalFiLMTrainer:
             # Step scheduler
             self.scheduler.step()
             
-            # Save checkpoint periodically
-            if epoch % self.config.get("save_interval", 5) == 0:
-                self._save_checkpoint(epoch, is_best=False)
-                print(f"  [SAVE]  Checkpoint saved at epoch {epoch}")
+            # Save latest checkpoint every epoch (keep only 'latest' and 'best')
+            self._save_checkpoint(epoch, is_best=False)
+            print(f"  [SAVE]  Latest checkpoint saved at epoch {epoch}")
             
             print()
         
@@ -509,13 +516,20 @@ class CausalFiLMTrainer:
             "train_log": self.train_log,
             "val_log": self.val_log,
         }
-        
+        # Always save a 'latest' checkpoint (overwritten each epoch)
+        latest_path = self.checkpoint_dir / "latest_model.pth"
+        torch.save(checkpoint, latest_path)
+
+        # If this is the best model so far, also save a copy as 'best_model.pth'
         if is_best:
-            path = self.checkpoint_dir / "best_model.pth"
-            torch.save(checkpoint, path)
-        else:
-            path = self.checkpoint_dir / f"checkpoint_epoch_{epoch}.pth"
-            torch.save(checkpoint, path)
+            best_path = self.checkpoint_dir / "best_model.pth"
+            torch.save(checkpoint, best_path)
+        # Also persist logs immediately so training_log.json stays up-to-date
+        try:
+            self._save_logs()
+        except Exception:
+            # Do not fail training if log saving fails; print a warning
+            print("  [WARN]  Failed to save training logs during checkpointing")
     
     def _save_logs(self):
         """Save training logs."""
@@ -525,6 +539,64 @@ class CausalFiLMTrainer:
                 "train_log": self.train_log,
                 "val_log": self.val_log,
             }, f, indent=2)
+    
+    def load_checkpoint(self, checkpoint_path: str, reset_optimizer: bool = False):
+        """Load checkpoint to resume training.
+        
+        Args:
+            checkpoint_path: Path to checkpoint file (e.g., '/root/autodl-tmp/outputs/checkpoints/latest_model.pth')
+            reset_optimizer: If True, only load model weights and reset optimizer/scheduler (useful when resuming from best_model.pth)
+        """
+        print("=" * 70)
+        print("LOADING CHECKPOINT")
+        print("=" * 70)
+        print(f"  Checkpoint: {checkpoint_path}")
+        
+        # Load with weights_only=False to support full checkpoint (optimizer, scheduler, logs)
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        
+        # Restore model state
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        
+        # Auto-detect if we should reset optimizer (e.g., resuming from best_model.pth)
+        checkpoint_epoch = checkpoint["epoch"]
+        is_best_checkpoint = "best_model.pth" in str(checkpoint_path)
+        
+        if reset_optimizer or is_best_checkpoint:
+            print(f"  Mode: Reset optimizer and scheduler (fresh optimization from best weights)")
+            print(f"  Resuming from epoch: {checkpoint_epoch} (will start from epoch {checkpoint_epoch + 1})")
+            
+            # Only restore training state tracking
+            self.current_epoch = checkpoint_epoch
+            self.best_metric = checkpoint["best_metric"]
+            self.train_log = checkpoint.get("train_log", [])
+            self.val_log = checkpoint.get("val_log", [])
+            
+            # Keep optimizer and scheduler at their initial state (already created in __init__)
+            print(f"  Best metric so far: {self.best_metric:.4f}")
+            print(f"  Learning rate: {self.config['learning_rate']} (reset to initial)")
+        else:
+            print(f"  Mode: Full state restoration (continue exact training state)")
+            
+            # Restore optimizer state
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            
+            # Restore scheduler state
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            
+            # Restore training state
+            self.current_epoch = checkpoint_epoch
+            self.best_metric = checkpoint["best_metric"]
+            self.train_log = checkpoint.get("train_log", [])
+            self.val_log = checkpoint.get("val_log", [])
+            
+            print(f"  Resumed from epoch: {self.current_epoch}")
+            print(f"  Best metric so far: {self.best_metric:.4f}")
+            print(f"  Current learning rate: {self.optimizer.param_groups[0]['lr']:.2e}")
+        
+        print(f"  Training history: {len(self.train_log)} epochs")
+        print("=" * 70)
+        print()
 
 
 def main():
@@ -533,6 +605,8 @@ def main():
     parser = argparse.ArgumentParser(description="Train Causal-FiLM model")
     parser.add_argument("--dummy", action="store_true", help="Use dummy data and models")
     parser.add_argument("--config", type=str, default=None, help="Path to config file")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from (e.g., /root/autodl-tmp/outputs/checkpoints/latest_model.pth)")
+    parser.add_argument("--reset-optimizer", action="store_true", help="Reset optimizer and scheduler when resuming (useful for resuming from best_model.pth)")
     args = parser.parse_args()
     
     # Use config from train_config.py
@@ -559,6 +633,10 @@ def main():
     
     # Create trainer
     trainer = CausalFiLMTrainer(config, use_dummy=args.dummy)
+    
+    # Load checkpoint if resuming
+    if args.resume:
+        trainer.load_checkpoint(args.resume, reset_optimizer=args.reset_optimizer)
     
     # Train
     trainer.train()

@@ -90,6 +90,12 @@ Causal-FiLM是**无监督异常检测**模型，通过重建学习检测异常�
 ```bash
 # 使用默认配置训练
 bash scripts/train_causal_film.sh
+ --config configs/train_config.py \
+  --resume /root/autodl-tmp/outputs/checkpoints/best_model.pth
+
+python src/train_causal_film.py \
+    --config configs/train_config.py \
+    --resume /root/autodl-tmp/outputs/checkpoints/best_model.pth
 
 # 或直接运行Python
 python src/train_causal_film.py
@@ -107,7 +113,7 @@ python src/train_causal_film.py
 
 ```bash
 # 在测试集上评估
-bash scripts/evaluate_causal_film.sh /path/to/best_model.pth
+bash scripts/evaluate_causal_film.sh /root/autodl-tmp/outputs/checkpoints/best_model.pth
 
 # 查看结果
 cat /root/autodl-tmp/outputs/eval_results.json
