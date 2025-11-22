@@ -117,20 +117,23 @@ class ImageEncoder(nn.Module):
         
         hidden_states = outputs.hidden_states
         
-        # Layer 4 (Low-level texture)
-        feat_l4 = hidden_states[4] # (B*N, SeqLen, 768)
+        # Layer 8 (Mid-level features - Object parts/Cracks)
+        # Index 7 corresponds to Layer 8 in 0-based indexing if 0 is Embed? 
+        # User requested dino_output['hidden_states'][7]
+        feat_mid = hidden_states[7] # (B*N, SeqLen, 768)
         
-        # Layer 12 (High-level semantic)
-        feat_l12 = hidden_states[12] # (B*N, SeqLen, 768)
+        # Layer 11 (High-level features - Structure/Warping)
+        # User requested dino_output['hidden_states'][10]
+        feat_high = hidden_states[10] # (B*N, SeqLen, 768)
         
-        # Return raw features for DecoupledResultEncoder
+        # Return raw features for DecoupledGeMEncoder
         # Reshape to (B, N, SeqLen, 768)
-        feat_l4 = feat_l4.reshape(B, N, -1, 768)
-        feat_l12 = feat_l12.reshape(B, N, -1, 768)
+        feat_mid = feat_mid.reshape(B, N, -1, 768)
+        feat_high = feat_high.reshape(B, N, -1, 768)
         
         return {
-            "l4": feat_l4,
-            "l12": feat_l12
+            "mid": feat_mid,
+            "high": feat_high
         }
 
 
@@ -185,15 +188,15 @@ class DummyImageEncoder(nn.Module):
         features = features.flatten(1)  # (B*N, 256)
         features = self.projection(features)  # (B*N, 1536)
         
-        # Split into fake l4 and l12 (just split the 1536 dim)
-        feat_l4 = features[:, :768].unsqueeze(1) # Fake seq len 1
-        feat_l12 = features[:, 768:].unsqueeze(1)
+        # Split into fake mid and high
+        feat_mid = features[:, :768].unsqueeze(1) # Fake seq len 1
+        feat_high = features[:, 768:].unsqueeze(1)
         
         # Reshape to (B, N, SeqLen, 768)
-        feat_l4 = feat_l4.reshape(B, N, 1, 768)
-        feat_l12 = feat_l12.reshape(B, N, 1, 768)
+        feat_mid = feat_mid.reshape(B, N, 1, 768)
+        feat_high = feat_high.reshape(B, N, 1, 768)
         
         return {
-            "l4": feat_l4,
-            "l12": feat_l12
+            "mid": feat_mid,
+            "high": feat_high
         }

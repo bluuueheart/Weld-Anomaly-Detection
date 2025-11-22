@@ -235,7 +235,7 @@ class CausalFiLMModel(nn.Module):
         Z_process = self.process_encoder(F_video_mod, F_audio_mod)  # (B, 128)
         
         # Result encoder: Decoupled Dual-Stream encoding
-        # F_image_raw is dict {'l4': ..., 'l12': ...}
+        # F_image_raw is dict {'mid': ..., 'high': ...}
         Z_texture, Z_structure = self.result_encoder(F_image_raw)  # (B, 128), (B, 128)
         
         # ===== L3: Reconstruction via Decoder =====

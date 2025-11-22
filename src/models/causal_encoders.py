@@ -90,13 +90,32 @@ class ProcessEncoder(nn.Module):
         return Z_process
 
 
+class GeM(nn.Module):
+    """
+    Generalized Mean Pooling (GeM).
+    
+    Learns to focus on salient features (anomalies) via a learnable power parameter p.
+    As p -> infinity, GeM approaches Max Pooling.
+    As p -> 1, GeM approaches Mean Pooling.
+    """
+    def __init__(self, p=3, eps=1e-6):
+        super().__init__()
+        self.p = nn.Parameter(torch.ones(1) * p)
+        self.eps = eps
+
+    def forward(self, x):
+        # x: (B, C, N)
+        # Pool over N (spatial dimension)
+        return F.avg_pool1d(x.clamp(min=self.eps).pow(self.p), (x.size(-1))).pow(1./self.p).squeeze(-1)
+
+
 class ResultEncoder(nn.Module):
     """
-    Decoupled Result Encoder (Dual-Stream).
+    Decoupled GeM Encoder (Dual-Stream).
     
     Splits processing into two streams:
-    1. Texture Stream (Layer 4): Uses Top-K Pooling to capture small defects (Cracks).
-    2. Structure Stream (Layer 12): Uses Mean Pooling to capture global defects (Warping).
+    1. Texture Stream (Layer 8): Uses GeM Pooling to softly focus on anomalies.
+    2. Structure Stream (Layer 11): Uses Mean Pooling to capture global structure.
     
     Args:
         d_model (int): Output feature dimension (default: 128)
@@ -113,7 +132,10 @@ class ResultEncoder(nn.Module):
         
         self.d_model = d_model
         
-        # Stream 1: Texture (Layer 4)
+        # GeM layer for Texture Stream
+        self.gem_pool = GeM(p=3.0)
+        
+        # Stream 1: Texture (Layer 8)
         self.texture_projector = nn.Sequential(
             nn.Linear(768, d_model * 2),
             nn.LayerNorm(d_model * 2),
@@ -123,7 +145,7 @@ class ResultEncoder(nn.Module):
             nn.LayerNorm(d_model),
         )
         
-        # Stream 2: Structure (Layer 12)
+        # Stream 2: Structure (Layer 11)
         self.structure_projector = nn.Sequential(
             nn.Linear(768, d_model * 2),
             nn.LayerNorm(d_model * 2),
@@ -139,40 +161,33 @@ class ResultEncoder(nn.Module):
         
         Args:
             features_dict: Dictionary containing:
-                - 'l4': (B, N, SeqLen, 768)
-                - 'l12': (B, N, SeqLen, 768)
+                - 'mid': (B, N, SeqLen, 768) - Layer 8
+                - 'high': (B, N, SeqLen, 768) - Layer 11
             
         Returns:
             (z_texture, z_structure): Tuple of (B, d_model) tensors
         """
-        feat_l4 = features_dict['l4']   # (B, N, SeqLen, 768)
-        feat_l12 = features_dict['l12'] # (B, N, SeqLen, 768)
+        feat_mid = features_dict['mid']   # (B, N, SeqLen, 768)
+        feat_high = features_dict['high'] # (B, N, SeqLen, 768)
         
-        B, N, S, C = feat_l4.shape
+        B, N, S, C = feat_mid.shape
         
         # Flatten views and sequence for global pooling context
-        # We want to find anomalies across all views
-        flat_l4 = feat_l4.reshape(B, N * S, C)
-        flat_l12 = feat_l12.reshape(B, N * S, C)
+        flat_mid = feat_mid.reshape(B, N * S, C)
+        flat_high = feat_high.reshape(B, N * S, C)
         
-        # --- Stream 1: Texture (Focus on Cracks) ---
-        # Use Top-K Mean Pooling (Top 16 patches across all views)
-        # Exclude CLS token if it was included? DINOv2 CLS is usually index 0.
-        # ImageEncoder returns raw hidden states. If it includes CLS, we should probably ignore it for texture.
-        # Assuming ImageEncoder returns full sequence.
-        # Let's assume we just take Top-K from whatever is there.
-        
-        # Top-K pooling
-        k = min(16, flat_l4.size(1))
-        topk_l4 = flat_l4.topk(k=k, dim=1, sorted=False)[0] # (B, k, 768)
-        z_texture_raw = topk_l4.mean(dim=1) # (B, 768)
+        # --- Stream 1: Texture/Object (Layer 8) ---
+        # Use GeM pooling
+        # Permute to (B, C, N*S) for pooling over spatial dim
+        x_mid = flat_mid.permute(0, 2, 1) # (B, 768, N*S)
+        z_texture_raw = self.gem_pool(x_mid) # (B, 768)
         
         z_texture = self.texture_projector(z_texture_raw) # (B, d_model)
         z_texture = F.normalize(z_texture, p=2, dim=-1)
 
-        # --- Stream 2: Structure (Focus on Warping) ---
-        # Use Standard Mean Pooling over all patches
-        z_structure_raw = flat_l12.mean(dim=1) # (B, 768)
+        # --- Stream 2: Structure (Layer 11) ---
+        # Use Standard Mean Pooling
+        z_structure_raw = flat_high.mean(dim=1) # (B, 768)
         
         z_structure = self.structure_projector(z_structure_raw) # (B, d_model)
         z_structure = F.normalize(z_structure, p=2, dim=-1)
@@ -211,10 +226,8 @@ class DummyResultEncoder(nn.Module):
     
     def forward(self, features_dict: dict) -> tuple:
         """Simple mean pooling and projection."""
-        # Dummy implementation ignores input structure details
-        # Just return random vectors or projected dummy inputs
-        # Assuming inputs are tensors
-        feat = features_dict['l4'] # (B, N, S, 768)
+        # Dummy implementation
+        feat = features_dict['mid'] # (B, N, S, 768)
         pooled = feat.mean(dim=[1, 2]) # (B, 768)
         
         z_tex = F.normalize(self.tex_proj(pooled), p=2, dim=-1)

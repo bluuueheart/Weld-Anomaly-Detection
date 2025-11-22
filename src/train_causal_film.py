@@ -379,14 +379,16 @@ class CausalFiLMTrainer:
             
             # Forward pass
             output = self.model(batch)
-                loss_dict = self.criterion(
-                    Z_result=output.get("Z_result"),
-                    Z_result_pred=output.get("Z_result_pred"),
-                    Z_texture=output.get("Z_texture"),
-                    Z_structure=output.get("Z_structure"),
-                    Z_texture_pred=output.get("Z_texture_pred"),
-                    Z_structure_pred=output.get("Z_structure_pred"),
-                )            val_losses["total"].append(loss_dict["total"].item())
+            loss_dict = self.criterion(
+                Z_result=output.get("Z_result"),
+                Z_result_pred=output.get("Z_result_pred"),
+                Z_texture=output.get("Z_texture"),
+                Z_structure=output.get("Z_structure"),
+                Z_texture_pred=output.get("Z_texture_pred"),
+                Z_structure_pred=output.get("Z_structure_pred"),
+            )
+            
+            val_losses["total"].append(loss_dict["total"].item())
             val_losses["recon"].append(loss_dict["recon"])
             val_losses["clip_text"].append(loss_dict["clip_text"])
             

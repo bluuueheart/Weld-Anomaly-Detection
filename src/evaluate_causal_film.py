@@ -128,10 +128,31 @@ class CausalFiLMEvaluator:
             output = self.model(batch, return_encodings=True)
             
             # Image-level anomaly scores
-            scores = self.model.compute_anomaly_score(
-                output["Z_result"],
-                output["Z_result_pred"],
-            )
+            # Support both Dual-Stream (V7.1) and Legacy (V7.0) outputs
+            if "Z_texture" in output:
+                scores = self.model.compute_anomaly_score(
+                    Z_texture=output["Z_texture"],
+                    Z_structure=output["Z_structure"],
+                    Z_texture_pred=output["Z_texture_pred"],
+                    Z_structure_pred=output["Z_structure_pred"],
+                )
+            else:
+                # Fallback for legacy models if compute_anomaly_score supports it
+                # Note: V7.1 compute_anomaly_score requires texture/structure args.
+                # If we are running V7.1 code with V7.0 model weights, forward() might behave differently?
+                # Actually, if the class is V7.1, forward() ALWAYS returns Z_texture etc.
+                # So this branch is theoretically unreachable if using V7.1 code.
+                # But for safety/debugging:
+                scores = self.model.compute_anomaly_score(
+                    Z_result=output["Z_result"],
+                    Z_result_pred=output["Z_result_pred"],
+                    # Pass dummies if needed to satisfy signature, or rely on kwargs if signature was flexible
+                    # But current signature is strict. We should assume V7.1 forward output.
+                    Z_texture=output.get("Z_texture", output["Z_result"]), # Hack fallback
+                    Z_structure=output.get("Z_structure", output["Z_result"]),
+                    Z_texture_pred=output.get("Z_texture_pred", output["Z_result_pred"]),
+                    Z_structure_pred=output.get("Z_structure_pred", output["Z_result_pred"]),
+                )
             
             all_scores.append(scores.cpu())
             
