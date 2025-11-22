@@ -53,6 +53,7 @@ class ImageEncoder(nn.Module):
                         model_path_resolved,
                         local_files_only=True,
                         trust_remote_code=True,
+                        output_hidden_states=True, # Enable hidden states output
                     )
                 except Exception as e:
                     raise RuntimeError(
@@ -78,14 +79,11 @@ class ImageEncoder(nn.Module):
         # Get backbone output dimension
         backbone_dim = self.backbone.config.hidden_size
         
-        # Projection layer with moderate dropout (trainable even when backbone frozen)
-        if backbone_dim != embed_dim:
-            self.projection = nn.Sequential(
-                nn.Dropout(p=0.2),  # Moderate dropout
-                nn.Linear(backbone_dim, embed_dim),
-            )
-        else:
-            self.projection = nn.Dropout(p=0.2)  # Dropout for Identity case
+        # Multi-scale feature dimension (Layer 4 + Layer 12)
+        self.multi_scale_dim = backbone_dim * 2
+        
+        # No projection here, we return raw concatenated features
+        self.projection = nn.Identity()
     
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -94,7 +92,7 @@ class ImageEncoder(nn.Module):
             images: (B, num_angles, 3, H, W) tensor
             
         Returns:
-            features: (B, seq_len, embed_dim) tensor
+            features: (B, num_angles, 1536) tensor (concatenated L4+L12 pooled features)
         """
         B, N, C, H, W = images.shape
         assert N == self.num_angles, f"Expected {self.num_angles} angles, got {N}"
@@ -104,38 +102,36 @@ class ImageEncoder(nn.Module):
         
         # Extract features with DINOv2
         outputs = self.backbone(pixel_values=images_flat)
-        # Get [CLS] token or patch tokens
-        # DINOv2 outputs: last_hidden_state shape (B*N, num_patches+1, dim)
-        features = outputs.last_hidden_state  # (B*N, seq_len, backbone_dim)
         
-        # Project to target dimension
-        features = self.projection(features)  # (B*N, seq_len, embed_dim)
+        # Extract Layer 4 and Layer 12
+        # hidden_states is a tuple of (B*N, SeqLen, Dim)
+        # Index 0 is embedding, Index 1 is Layer 1, ..., Index 12 is Layer 12 (Final)
+        # We want Layer 4 (index 4) and Layer 12 (index 12)
+        # Note: HuggingFace DINOv2 output_hidden_states includes embeddings at index 0?
+        # Let's check documentation or assume standard HF behavior: 
+        # hidden_states[0] = embeddings, hidden_states[1] = layer 1 output...
+        # So Layer 4 is index 4+1=5? Or just index 4?
+        # Usually hidden_states includes the output of embeddings + one for each layer.
+        # So len(hidden_states) = 13 (1 embedding + 12 layers).
+        # Layer 4 output is at index 4. Layer 12 output is at index 12.
         
-        # Reshape back to (B, N, seq_len, embed_dim)
-        seq_len = features.shape[1]
-        features = features.reshape(B, N, seq_len, self.embed_dim)
+        hidden_states = outputs.hidden_states
         
-        # Aggregate across angles
-        if self.aggregation == "mean":
-            features = features.mean(dim=1)  # (B, seq_len, embed_dim)
-        elif self.aggregation == "max":
-            features = features.max(dim=1)[0]  # (B, seq_len, embed_dim)
-        elif self.aggregation == "concat":
-            # Concatenate along sequence dimension
-            features = features.reshape(B, N * seq_len, self.embed_dim)
-        elif self.aggregation == "none":
-            # Do not aggregate across angles here; return per-view pooled features.
-            # Pool over sequence dimension (take CLS token or mean over patches).
-            # Prefer CLS token at index 0 if available.
-            try:
-                features = features[:, :, 0, :]
-            except Exception:
-                features = features.mean(dim=2)
-            # Resulting shape: (B, N, embed_dim)
-        else:
-            raise ValueError(f"Unknown aggregation: {self.aggregation}")
+        # Layer 4 (Low-level texture)
+        feat_l4 = hidden_states[4] # (B*N, SeqLen, 768)
         
-        return features
+        # Layer 12 (High-level semantic)
+        feat_l12 = hidden_states[12] # (B*N, SeqLen, 768)
+        
+        # Return raw features for DecoupledResultEncoder
+        # Reshape to (B, N, SeqLen, 768)
+        feat_l4 = feat_l4.reshape(B, N, -1, 768)
+        feat_l12 = feat_l12.reshape(B, N, -1, 768)
+        
+        return {
+            "l4": feat_l4,
+            "l12": feat_l12
+        }
 
 
 class DummyImageEncoder(nn.Module):
@@ -164,20 +160,20 @@ class DummyImageEncoder(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
             nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d((7, 7)),
+            nn.AdaptiveAvgPool2d((1, 1)), # Global pool
         )
         
-        # Projection to embed_dim
-        self.projection = nn.Linear(256 * 7 * 7, embed_dim)
+        # Output 1536 dim to match real encoder
+        self.projection = nn.Linear(256, 1536)
     
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
+    def forward(self, images: torch.Tensor) -> dict:
         """Forward pass.
         
         Args:
             images: (B, num_angles, 3, H, W) tensor
             
         Returns:
-            features: (B, 1, embed_dim) tensor (single token per sample)
+            dict: {'l4': (B, N, SeqLen, 768), 'l12': (B, N, SeqLen, 768)}
         """
         B, N, C, H, W = images.shape
         
@@ -185,20 +181,19 @@ class DummyImageEncoder(nn.Module):
         images_flat = images.reshape(B * N, C, H, W)
         
         # Extract features
-        features = self.backbone(images_flat)  # (B*N, 256, 7, 7)
-        features = features.flatten(1)  # (B*N, 256*7*7)
-        features = self.projection(features)  # (B*N, embed_dim)
+        features = self.backbone(images_flat)  # (B*N, 256, 1, 1)
+        features = features.flatten(1)  # (B*N, 256)
+        features = self.projection(features)  # (B*N, 1536)
         
-        # Reshape to (B, N, embed_dim)
-        features = features.reshape(B, N, self.embed_dim)
+        # Split into fake l4 and l12 (just split the 1536 dim)
+        feat_l4 = features[:, :768].unsqueeze(1) # Fake seq len 1
+        feat_l12 = features[:, 768:].unsqueeze(1)
         
-        # Aggregate across angles
-        if self.aggregation == "mean":
-            features = features.mean(dim=1, keepdim=True)  # (B, 1, embed_dim)
-        elif self.aggregation == "max":
-            features = features.max(dim=1, keepdim=True)[0]  # (B, 1, embed_dim)
-        else:
-            # concat: (B, N, embed_dim) -> keep as is
-            pass
+        # Reshape to (B, N, SeqLen, 768)
+        feat_l4 = feat_l4.reshape(B, N, 1, 768)
+        feat_l12 = feat_l12.reshape(B, N, 1, 768)
         
-        return features
+        return {
+            "l4": feat_l4,
+            "l12": feat_l12
+        }

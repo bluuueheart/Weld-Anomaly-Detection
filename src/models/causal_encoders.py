@@ -8,6 +8,7 @@ Implements:
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class ProcessEncoder(nn.Module):
@@ -91,12 +92,11 @@ class ProcessEncoder(nn.Module):
 
 class ResultEncoder(nn.Module):
     """
-    Result Encoder for post-weld images.
+    Decoupled Result Encoder (Dual-Stream).
     
-    Architecture:
-        - Multi-view image features (B, N_views, D) 
-        - Mean pooling -> (B, D)
-        - MLP (2-layer) -> (B, d_model)
+    Splits processing into two streams:
+    1. Texture Stream (Layer 4): Uses Top-K Pooling to capture small defects (Cracks).
+    2. Structure Stream (Layer 12): Uses Mean Pooling to capture global defects (Warping).
     
     Args:
         d_model (int): Output feature dimension (default: 128)
@@ -107,14 +107,25 @@ class ResultEncoder(nn.Module):
         self,
         d_model: int = 128,
         dropout: float = 0.1,
+        **kwargs
     ):
         super().__init__()
         
         self.d_model = d_model
         
-        # MLP encoder
-        self.encoder_mlp = nn.Sequential(
-            nn.Linear(d_model, d_model * 2),
+        # Stream 1: Texture (Layer 4)
+        self.texture_projector = nn.Sequential(
+            nn.Linear(768, d_model * 2),
+            nn.LayerNorm(d_model * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model * 2, d_model),
+            nn.LayerNorm(d_model),
+        )
+        
+        # Stream 2: Structure (Layer 12)
+        self.structure_projector = nn.Sequential(
+            nn.Linear(768, d_model * 2),
             nn.LayerNorm(d_model * 2),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -122,23 +133,51 @@ class ResultEncoder(nn.Module):
             nn.LayerNorm(d_model),
         )
     
-    def forward(self, image_features: torch.Tensor) -> torch.Tensor:
+    def forward(self, features_dict: dict) -> tuple:
         """
         Encode result modality (images).
         
         Args:
-            image_features: Multi-view image features (B, N_views, d_model)
+            features_dict: Dictionary containing:
+                - 'l4': (B, N, SeqLen, 768)
+                - 'l12': (B, N, SeqLen, 768)
             
         Returns:
-            Z_result: Result encoding (B, d_model)
+            (z_texture, z_structure): Tuple of (B, d_model) tensors
         """
-        # Mean pooling over views
-        pooled_features = image_features.mean(dim=1)  # (B, d_model)
+        feat_l4 = features_dict['l4']   # (B, N, SeqLen, 768)
+        feat_l12 = features_dict['l12'] # (B, N, SeqLen, 768)
         
-        # MLP encoding
-        Z_result = self.encoder_mlp(pooled_features)  # (B, d_model)
+        B, N, S, C = feat_l4.shape
         
-        return Z_result
+        # Flatten views and sequence for global pooling context
+        # We want to find anomalies across all views
+        flat_l4 = feat_l4.reshape(B, N * S, C)
+        flat_l12 = feat_l12.reshape(B, N * S, C)
+        
+        # --- Stream 1: Texture (Focus on Cracks) ---
+        # Use Top-K Mean Pooling (Top 16 patches across all views)
+        # Exclude CLS token if it was included? DINOv2 CLS is usually index 0.
+        # ImageEncoder returns raw hidden states. If it includes CLS, we should probably ignore it for texture.
+        # Assuming ImageEncoder returns full sequence.
+        # Let's assume we just take Top-K from whatever is there.
+        
+        # Top-K pooling
+        k = min(16, flat_l4.size(1))
+        topk_l4 = flat_l4.topk(k=k, dim=1, sorted=False)[0] # (B, k, 768)
+        z_texture_raw = topk_l4.mean(dim=1) # (B, 768)
+        
+        z_texture = self.texture_projector(z_texture_raw) # (B, d_model)
+        z_texture = F.normalize(z_texture, p=2, dim=-1)
+
+        # --- Stream 2: Structure (Focus on Warping) ---
+        # Use Standard Mean Pooling over all patches
+        z_structure_raw = flat_l12.mean(dim=1) # (B, 768)
+        
+        z_structure = self.structure_projector(z_structure_raw) # (B, d_model)
+        z_structure = F.normalize(z_structure, p=2, dim=-1)
+
+        return z_texture, z_structure
 
 
 class DummyProcessEncoder(nn.Module):
@@ -167,7 +206,50 @@ class DummyResultEncoder(nn.Module):
     def __init__(self, d_model: int = 128, **kwargs):
         super().__init__()
         self.d_model = d_model
+        self.tex_proj = nn.Linear(768, d_model)
+        self.struc_proj = nn.Linear(768, d_model)
     
-    def forward(self, image_features: torch.Tensor) -> torch.Tensor:
-        """Simple mean pooling."""
-        return image_features.mean(dim=1)
+    def forward(self, features_dict: dict) -> tuple:
+        """Simple mean pooling and projection."""
+        # Dummy implementation ignores input structure details
+        # Just return random vectors or projected dummy inputs
+        # Assuming inputs are tensors
+        feat = features_dict['l4'] # (B, N, S, 768)
+        pooled = feat.mean(dim=[1, 2]) # (B, 768)
+        
+        z_tex = F.normalize(self.tex_proj(pooled), p=2, dim=-1)
+        z_struc = F.normalize(self.struc_proj(pooled), p=2, dim=-1)
+        
+        return z_tex, z_struc
+
+
+class SpatialResultEncoder(nn.Module):
+    """
+    Spatial Result Encoder for post-weld images (Patch-based).
+    
+    Projects all patches to output dimension while maintaining spatial structure.
+    """
+    def __init__(self, input_dim=768, output_dim=128):
+        super().__init__()
+        # Use Linear to process sequence, weights shared across patches
+        self.projector = nn.Linear(input_dim, output_dim)
+        
+    def forward(self, x):
+        # x shape: (B, N_patches, input_dim)
+        z_result = self.projector(x) 
+        # z_result shape: (B, N_patches, output_dim)
+        # Normalize for Cosine Distance
+        z_result = F.normalize(z_result, p=2, dim=-1)
+        return z_result
+
+
+class DummySpatialResultEncoder(nn.Module):
+    """Dummy Spatial Result Encoder."""
+    def __init__(self, input_dim=768, output_dim=128):
+        super().__init__()
+        self.projector = nn.Linear(input_dim, output_dim)
+        
+    def forward(self, x):
+        z_result = self.projector(x)
+        z_result = F.normalize(z_result, p=2, dim=-1)
+        return z_result

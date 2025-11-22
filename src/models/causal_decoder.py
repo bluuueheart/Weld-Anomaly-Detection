@@ -142,26 +142,15 @@ class AntiGenBlock(nn.Module):
 
 class CausalDecoder(nn.Module):
     """
-    Causal Decoder with anti-generalization mechanisms.
+    Dual-Stream Causal Decoder.
     
-    Key features:
-    1. Noisy Bottleneck: Dropout on input to prevent overfitting
-    2. Linear Attention: Unfocused attention to prevent shortcut learning
-    3. Lightweight architecture: Only 2 layers to limit capacity
-    
-    Architecture:
-        Z_process (B, d_model)
-        -> Dropout (Noisy Bottleneck)
-        -> Unsqueeze to (B, 1, d_model)
-        -> N x AntiGenBlock (Linear Attention + FFN)
-        -> Squeeze to (B, d_model)
-        -> Z_result_pred
+    Predicts both Texture and Structure vectors from the Process context.
     
     Args:
-        d_model (int): Feature dimension (default: 128)
-        num_layers (int): Number of decoder layers (default: 2)
-        nhead (int): Number of attention heads (default: 4)
-        dropout_p (float): Dropout probability for noisy bottleneck (default: 0.2)
+        d_model (int): Feature dimension
+        num_layers (int): Number of transformer layers
+        nhead (int): Number of attention heads
+        dropout_p (float): Dropout rate
     """
     
     def __init__(
@@ -169,92 +158,136 @@ class CausalDecoder(nn.Module):
         d_model: int = 128,
         num_layers: int = 2,
         nhead: int = 4,
-        dropout_p: float = 0.2,
+        dropout_p: float = 0.1,
     ):
         super().__init__()
         
-        self.d_model = d_model
-        self.num_layers = num_layers
-        self.dropout_p = dropout_p
+        # Shared Anti-Generalization Block
+        # We use a deeper shared block to extract rich context
+        self.shared_decoder = nn.Sequential(
+            *[AntiGenBlock(d_model, nhead, dropout_p) for _ in range(num_layers)]
+        )
         
-        # Noisy bottleneck (applied during training only)
-        self.noisy_dropout = nn.Dropout(dropout_p)
+        # Separate heads for Texture and Structure
+        self.texture_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model) # Output Z_texture_pred
+        )
         
-        # Anti-generalization blocks
-        self.layers = nn.ModuleList([
-            AntiGenBlock(d_model, nhead, dropout=0.1)
-            for _ in range(num_layers)
-        ])
+        self.structure_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model) # Output Z_structure_pred
+        )
         
-        # Output normalization
-        self.output_norm = nn.LayerNorm(d_model)
+        self.dropout = nn.Dropout(dropout_p)
     
-    def forward(
-        self,
-        Z_process: torch.Tensor,
-        is_training: bool = True,
-    ) -> torch.Tensor:
+    def forward(self, z_process: torch.Tensor, is_training: bool = True) -> tuple:
         """
-        Decode process encoding to reconstruct result encoding.
+        Reconstruct result features from process features.
         
         Args:
-            Z_process: Process encoding (B, d_model)
-            is_training: Whether in training mode (applies noisy bottleneck)
+            z_process: Process encoding (B, d_model)
+            is_training: Whether in training mode (controls dropout)
             
         Returns:
-            Z_result_pred: Reconstructed result encoding (B, d_model)
+            (z_texture_pred, z_structure_pred): Predicted vectors
         """
-        # 1. Apply noisy bottleneck (only during training)
+        # Add sequence dimension for transformer: (B, 1, D)
+        x = z_process.unsqueeze(1)
+        
+        # Apply noisy bottleneck during training
         if is_training:
-            Z_process_noisy = self.noisy_dropout(Z_process)
-        else:
-            Z_process_noisy = Z_process
+            x = self.dropout(x)
         
-        # 2. Reshape for transformer: (B, d_model) -> (B, 1, d_model)
-        x = Z_process_noisy.unsqueeze(1)  # (B, 1, d_model)
+        # Shared decoding
+        feat = self.shared_decoder(x) # (B, 1, D)
+        feat = feat.squeeze(1) # (B, D)
         
-        # 3. Pass through anti-generalization blocks
-        for layer in self.layers:
-            x = layer(x)  # (B, 1, d_model)
+        # Predict heads
+        z_texture_pred = self.texture_head(feat)
+        z_structure_pred = self.structure_head(feat)
         
-        # 4. Reshape back: (B, 1, d_model) -> (B, d_model)
-        Z_result_pred = x.squeeze(1)  # (B, d_model)
+        # Normalize outputs (since targets are normalized)
+        z_texture_pred = F.normalize(z_texture_pred, p=2, dim=-1)
+        z_structure_pred = F.normalize(z_structure_pred, p=2, dim=-1)
         
-        # 5. Output normalization
-        Z_result_pred = self.output_norm(Z_result_pred)
-        
-        return Z_result_pred
+        return z_texture_pred, z_structure_pred
 
 
 class DummyCausalDecoder(nn.Module):
-    """
-    Lightweight dummy decoder for testing.
+    """Dummy decoder for testing."""
     
-    Simply applies a linear layer with dropout.
-    """
-    
-    def __init__(
-        self,
-        d_model: int = 128,
-        dropout_p: float = 0.2,
-        **kwargs,
-    ):
+    def __init__(self, d_model: int = 128, **kwargs):
         super().__init__()
-        
         self.d_model = d_model
-        self.dropout = nn.Dropout(dropout_p)
-        self.decoder = nn.Sequential(
-            nn.Linear(d_model, d_model * 2),
-            nn.ReLU(),
-            nn.Linear(d_model * 2, d_model),
-        )
+        self.tex_head = nn.Linear(d_model, d_model)
+        self.struc_head = nn.Linear(d_model, d_model)
     
-    def forward(
-        self,
-        Z_process: torch.Tensor,
-        is_training: bool = True,
-    ) -> torch.Tensor:
-        """Simple linear decoding."""
+    def forward(self, z_process: torch.Tensor, **kwargs) -> tuple:
+        z_tex = F.normalize(self.tex_head(z_process), p=2, dim=-1)
+        z_struc = F.normalize(self.struc_head(z_process), p=2, dim=-1)
+        return z_tex, z_struc
+
+
+class SpatialCausalDecoder(nn.Module):
+    """
+    Spatial Causal Decoder.
+    
+    Generates spatial image features from global process vector using learnable positional embeddings.
+    """
+    def __init__(self, d_model=128, num_patches=256, num_layers=2, nhead=4, dropout_p=0.2):
+        super().__init__()
+        self.num_patches = num_patches
+        self.d_model = d_model
+        
+        # 1. Learnable Positional Embeddings
+        # Shape (1, N_patches, 128)
+        self.pos_embed = nn.Parameter(torch.randn(1, num_patches, d_model) * 0.02)
+        
+        # 2. Anti-Generalization Block
+        self.layers = nn.ModuleList([AntiGenBlock(d_model, nhead) for _ in range(num_layers)])
+        self.dropout = nn.Dropout(dropout_p)
+
+    def forward(self, Z_process, is_training=True):
+        # Z_process shape: (B, 128) -> Global features
+        B = Z_process.shape[0]
+        
+        # 1. Noisy Bottleneck
         if is_training:
             Z_process = self.dropout(Z_process)
-        return self.decoder(Z_process)
+            
+        # 2. Expand + Inject Position
+        # (B, 128) -> (B, 1, 128) -> (B, N, 128)
+        x = Z_process.unsqueeze(1).expand(-1, self.num_patches, -1)
+        
+        # Add positional info
+        x = x + self.pos_embed
+        
+        # 3. Transformer layers
+        for layer in self.layers:
+            x = layer(x)
+            
+        # 4. Normalize output
+        Z_result_pred = F.normalize(x, p=2, dim=-1)
+        
+        return Z_result_pred # (B, N_patches, 128)
+
+
+class DummySpatialCausalDecoder(nn.Module):
+    """Dummy Spatial Causal Decoder."""
+    def __init__(self, d_model=128, num_patches=256):
+        super().__init__()
+        self.num_patches = num_patches
+        self.d_model = d_model
+        self.pos_embed = nn.Parameter(torch.randn(1, num_patches, d_model) * 0.02)
+        
+    def forward(self, Z_process, is_training=True):
+        B = Z_process.shape[0]
+        x = Z_process.unsqueeze(1).expand(-1, self.num_patches, -1)
+        x = x + self.pos_embed
+        Z_result_pred = F.normalize(x, p=2, dim=-1)
+        return Z_result_pred

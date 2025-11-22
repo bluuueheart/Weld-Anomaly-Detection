@@ -4,6 +4,34 @@ This file consolidates recent updates and code-change notes. It is a curated, hu
 
 ## Summary (Top-level)
 
+### V7.1 — Mixed Pooling for Small Defect Detection (2025-11-21)
+
+- **Problem**: Global Average Pooling on Layer 4 diluted small defects (Cracks), leading to low AUROC (0.78).
+- **Fix**: Implemented **Mixed Pooling** in `ImageEncoder`.
+    - **Layer 12**: Keeps **Mean Pooling** (for global structure/warping).
+    - **Layer 4**: Switches to **Max Pooling** (to capture peak anomalies like cracks).
+    - **Fusion**: Concatenates `[Mean-L12, Max-L4]`.
+- **Goal**: Improve sensitivity to small, local defects while maintaining global structural awareness.
+
+### V7 — Multi-Scale Global Reconstruction (2025-11-21)
+
+- **Core Logic Change**: Shifted from Patch-based reconstruction (which caused Mode Collapse) to **Multi-Scale Global Reconstruction**.
+- **L0 (Backbone)**: Modified `ImageEncoder` to extract features from **Layer 4** (texture) and **Layer 12** (semantics), apply Global Average Pooling, and concatenate them (1536 dim).
+- **L2 (Result Encoder)**: Updated `ResultEncoder` to take the 1536-dim multi-scale vector, pool over views, and project to 128-dim `Z_result`.
+- **L3 (Decoder)**: Reverted to a global `CausalDecoder` (MLP-based) that reconstructs the 128-dim global vector.
+- **L4 (Loss/Inference)**: Reverted to global cosine similarity loss and anomaly scoring.
+- **Reasoning**: Layer 4 captures low-level defects (cracks, porosity) while Layer 12 captures structural anomalies. Fusing them forces the model to learn a complete global signature without the difficulty of spatial hallucination.
+
+### V6 — Spatial/Patch-based Anomaly Detection (2025-11-21)
+
+- **Core Logic Change**: Shifted from Global feature vector to Spatial/Patch-based feature vectors.
+- **L0 (Backbone)**: Modified `ImageEncoder` to extract patch tokens from DINOv2 instead of CLS token.
+- **L2 (Result Encoder)**: Implemented `SpatialResultEncoder` to project patches while maintaining spatial dimensions.
+- **L3 (Decoder)**: Implemented `SpatialCausalDecoder` with learnable positional embeddings to generate spatial image features from global process vector.
+- **L4 (Loss/Inference)**:
+    - Training: Per-patch reconstruction loss.
+    - Inference: Max-pooling of patch errors for anomaly scoring (sensitive to small defects like Undercut).
+
 ### V5 — Causal-FiLM Implementation (2025-11-10)
 
 - **Major Architectural Shift**: Transitioned from supervised contrastive learning to unsupervised anomaly detection
@@ -129,6 +157,69 @@ This file consolidates recent updates and code-change notes. It is a curated, hu
 
 ## Code-level highlights
 
+### V7.1 (Mixed Pooling for Small Defect Detection)
+
+- **Architecture Design**:
+  - Backbone: DINOv2 for multi-scale feature extraction
+  - Unified feature dimension (d_model=128)
+  - ResultEncoder: projects multi-scale vector to 128-dim `Z_result`
+  - CausalDecoder: reconstructs global vector from `Z_result`
+  - Anti-generalization: Linear attention + noisy bottleneck prevents overfitting to anomalies
+
+- **Loss Function**:
+  - L_total = L_recon + λ * L_text
+  - L_recon: Cosine distance between Z_result and Z_result_pred
+  - L_text: CLIP-based semantic constraint ("a normal weld")
+  - λ = 0.1 (default)
+
+- **Training Strategy**:
+  - Only normal samples in training set
+  - Test set includes both normal and anomalies
+  - Anomaly score = 1 - cos_sim(Z_result, Z_result_pred)
+  - Higher score = anomaly
+
+### V7 (Multi-Scale Global Reconstruction)
+
+- **Architecture Design**:
+  - Backbone: DINOv2 for multi-scale feature extraction
+  - Unified feature dimension (d_model=128)
+  - ResultEncoder: projects multi-scale vector to 128-dim `Z_result`
+  - CausalDecoder: reconstructs global vector from `Z_result`
+  - Anti-generalization: Linear attention + noisy bottleneck prevents overfitting to anomalies
+
+- **Loss Function**:
+  - L_total = L_recon + λ * L_text
+  - L_recon: Cosine distance between Z_result and Z_result_pred
+  - L_text: CLIP-based semantic constraint ("a normal weld")
+  - λ = 0.1 (default)
+
+- **Training Strategy**:
+  - Only normal samples in training set
+  - Test set includes both normal and anomalies
+  - Anomaly score = 1 - cos_sim(Z_result, Z_result_pred)
+  - Higher score = anomaly
+
+### V6 (Spatial/Patch-based Anomaly Detection)
+
+- **Architecture Design**:
+  - Backbone: DINOv2 for patch token extraction
+  - Unified patch dimension (d_model=128)
+  - SpatialResultEncoder: projects patches while preserving spatial structure
+  - SpatialCausalDecoder: generates spatial features with learnable positional embeddings
+  - Anti-generalization: Linear attention + noisy bottleneck prevents overfitting to anomalies
+
+- **Loss Function**:
+  - L_total = L_recon + λ * L_text
+  - L_recon: Cosine distance between Z_result and Z_result_pred
+  - L_text: CLIP-based semantic constraint ("a normal weld")
+  - λ = 0.1 (default)
+
+- **Training Strategy**:
+  - Only normal samples in training set
+  - Test set includes both normal and anomalies
+  - Anomaly score = 1 - cos_sim(Z_result, Z_result_pred)
+  - Higher score = anomaly
+
 ### V5 (Causal-FiLM)
 
 - **Architecture Design**:
@@ -168,7 +259,42 @@ This file consolidates recent updates and code-change notes. It is a curated, hu
 - scripts/verify_v4_config.sh
   - Script added/updated to verify critical config keys and V4 readiness
 
+### Fixes (2025-11-21)
+- **Fixed Shape Mismatch in CausalFiLMModel**: Resolved `ValueError: not enough values to unpack` by correctly handling 3D input `(B, Total_Patches, D)` from `ImageEncoder` and removing incorrect 4D unpacking.
+- **Updated DummyImageEncoder**: Changed output size to 16x16 patches (256 total) to match DINOv2 behavior and `CausalFiLMModel` expectations.
+- **Dynamic Patch Count**: Updated `CausalFiLMModel` to calculate `total_patches` based on aggregation method ("mean" -> 256, "concat" -> N*256).
+
 ## How to use
+
+### For Mixed Pooling for Small Defect Detection (V7.1)
+
+```bash
+# Training
+bash scripts/train_causal_film.sh
+
+# Evaluation
+bash scripts/evaluate_causal_film.sh /path/to/checkpoint.pth
+```
+
+### For Multi-Scale Global Reconstruction (V7)
+
+```bash
+# Training
+bash scripts/train_causal_film.sh
+
+# Evaluation
+bash scripts/evaluate_causal_film.sh /path/to/checkpoint.pth
+```
+
+### For Spatial/Patch-based Anomaly Detection (V6)
+
+```bash
+# Training
+bash scripts/train_causal_film.sh
+
+# Evaluation
+bash scripts/evaluate_causal_film.sh /path/to/checkpoint.pth
+```
 
 ### For Causal-FiLM (V5)
 
