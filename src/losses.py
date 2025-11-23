@@ -199,8 +199,7 @@ class ReconstructionLoss(nn.Module):
             loss: Scalar reconstruction loss
         """
         # Cosine distance = 1 - cosine_similarity
-        # Support (B, D)
-        cos_sim = F.cosine_similarity(Z_result, Z_result_pred, dim=-1)
+        cos_sim = F.cosine_similarity(Z_result, Z_result_pred, dim=1)
         loss = 1.0 - cos_sim.mean()
         return loss
 
@@ -333,56 +332,41 @@ class CausalFILMLoss(nn.Module):
     
     def forward(
         self,
-        Z_result: torch.Tensor = None,
-        Z_result_pred: torch.Tensor = None,
-        Z_texture: torch.Tensor = None,
-        Z_structure: torch.Tensor = None,
-        Z_texture_pred: torch.Tensor = None,
-        Z_structure_pred: torch.Tensor = None,
+        Z_result: torch.Tensor,
+        Z_result_pred: torch.Tensor,
     ) -> dict:
         """
         Compute combined Causal-FiLM loss.
         
-        Supports both legacy (single stream) and dual-stream inputs.
-        
         Args:
-            Z_result: Legacy GT
-            Z_result_pred: Legacy Pred
-            Z_texture: GT Texture
-            Z_structure: GT Structure
-            Z_texture_pred: Pred Texture
-            Z_structure_pred: Pred Structure
+            Z_result: Ground truth result encoding (B, d_model)
+            Z_result_pred: Reconstructed result encoding (B, d_model)
             
         Returns:
-            loss_dict: Dictionary containing losses
+            loss_dict: Dictionary containing:
+                - 'total': Total loss
+                - 'recon_cos': Reconstruction loss (cosine)
+                - 'recon_mse': Reconstruction loss (MSE)
+                - 'clip_text': CLIP text constraint loss
         """
-        loss_recon = 0.0
-        loss_clip_text = 0.0
+        # 1. Cosine Loss (Direction)
+        loss_cos = 1.0 - F.cosine_similarity(Z_result, Z_result_pred, dim=-1).mean()
         
-        # Check if using Dual-Stream
-        if Z_texture is not None and Z_structure is not None:
-            # Texture Reconstruction
-            loss_recon_tex = self.recon_loss(Z_texture, Z_texture_pred)
-            # Structure Reconstruction
-            loss_recon_struc = self.recon_loss(Z_structure, Z_structure_pred)
-            
-            loss_recon = loss_recon_tex + loss_recon_struc
-            
-            # CLIP Text Loss
-            # Apply to Structure vector (semantic)
-            loss_clip_text = self.clip_text_loss(Z_structure_pred)
-            
-        else:
-            # Legacy Single Stream
-            loss_recon = self.recon_loss(Z_result, Z_result_pred)
-            loss_clip_text = self.clip_text_loss(Z_result_pred)
+        # 2. L1 Loss (Mean Absolute Error)
+        # We want the model to match the INTENSITY of the features
+        loss_l1 = F.l1_loss(Z_result, Z_result_pred)
+        
+        # CLIP text loss
+        loss_clip_text = self.clip_text_loss(Z_result_pred)
         
         # Total loss
-        total_loss = loss_recon + self.lambda_text * loss_clip_text
+        # L_total = loss_cos + 10.0 * loss_l1 + lambda_clip * L_clip
+        total_loss = loss_cos + 10.0 * loss_l1 + self.lambda_text * loss_clip_text
         
         loss_dict = {
             'total': total_loss,
-            'recon': loss_recon.item(),
+            'recon_cos': loss_cos.item(),
+            'recon_l1': loss_l1.item(),
             'clip_text': loss_clip_text.item(),
         }
         

@@ -37,7 +37,7 @@ from configs.train_config import TRAIN_CONFIG
 def load_checkpoint(model, ckpt_path: str, device: torch.device):
     if not os.path.isfile(ckpt_path):
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
-    ckpt = torch.load(ckpt_path, map_location=device)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     state = ckpt.get('model_state_dict', ckpt)
     model.load_state_dict(state)
 

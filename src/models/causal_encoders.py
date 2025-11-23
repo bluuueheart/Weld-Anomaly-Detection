@@ -8,7 +8,6 @@ Implements:
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class ProcessEncoder(nn.Module):
@@ -90,32 +89,14 @@ class ProcessEncoder(nn.Module):
         return Z_process
 
 
-class GeM(nn.Module):
-    """
-    Generalized Mean Pooling (GeM).
-    
-    Learns to focus on salient features (anomalies) via a learnable power parameter p.
-    As p -> infinity, GeM approaches Max Pooling.
-    As p -> 1, GeM approaches Mean Pooling.
-    """
-    def __init__(self, p=3, eps=1e-6):
-        super().__init__()
-        self.p = nn.Parameter(torch.ones(1) * p)
-        self.eps = eps
-
-    def forward(self, x):
-        # x: (B, C, N)
-        # Pool over N (spatial dimension)
-        return F.avg_pool1d(x.clamp(min=self.eps).pow(self.p), (x.size(-1))).pow(1./self.p).squeeze(-1)
-
-
 class ResultEncoder(nn.Module):
     """
-    Decoupled GeM Encoder (Dual-Stream).
+    Result Encoder for post-weld images.
     
-    Splits processing into two streams:
-    1. Texture Stream (Layer 8): Uses GeM Pooling to softly focus on anomalies.
-    2. Structure Stream (Layer 11): Uses Mean Pooling to capture global structure.
+    Architecture:
+        - Multi-view image features (B, N_views, D) 
+        - Mean pooling -> (B, D)
+        - MLP (2-layer) -> (B, d_model)
     
     Args:
         d_model (int): Output feature dimension (default: 128)
@@ -126,28 +107,14 @@ class ResultEncoder(nn.Module):
         self,
         d_model: int = 128,
         dropout: float = 0.1,
-        **kwargs
     ):
         super().__init__()
         
         self.d_model = d_model
         
-        # GeM layer for Texture Stream
-        self.gem_pool = GeM(p=3.0)
-        
-        # Stream 1: Texture (Layer 8)
-        self.texture_projector = nn.Sequential(
-            nn.Linear(768, d_model * 2),
-            nn.LayerNorm(d_model * 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model * 2, d_model),
-            nn.LayerNorm(d_model),
-        )
-        
-        # Stream 2: Structure (Layer 11)
-        self.structure_projector = nn.Sequential(
-            nn.Linear(768, d_model * 2),
+        # MLP encoder
+        self.encoder_mlp = nn.Sequential(
+            nn.Linear(d_model, d_model * 2),
             nn.LayerNorm(d_model * 2),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -155,44 +122,23 @@ class ResultEncoder(nn.Module):
             nn.LayerNorm(d_model),
         )
     
-    def forward(self, features_dict: dict) -> tuple:
+    def forward(self, image_features: torch.Tensor) -> torch.Tensor:
         """
         Encode result modality (images).
         
         Args:
-            features_dict: Dictionary containing:
-                - 'mid': (B, N, SeqLen, 768) - Layer 8
-                - 'high': (B, N, SeqLen, 768) - Layer 11
+            image_features: Multi-view image features (B, N_views, d_model)
             
         Returns:
-            (z_texture, z_structure): Tuple of (B, d_model) tensors
+            Z_result: Result encoding (B, d_model)
         """
-        feat_mid = features_dict['mid']   # (B, N, SeqLen, 768)
-        feat_high = features_dict['high'] # (B, N, SeqLen, 768)
+        # Mean pooling over views
+        pooled_features = image_features.mean(dim=1)  # (B, d_model)
         
-        B, N, S, C = feat_mid.shape
+        # MLP encoding
+        Z_result = self.encoder_mlp(pooled_features)  # (B, d_model)
         
-        # Flatten views and sequence for global pooling context
-        flat_mid = feat_mid.reshape(B, N * S, C)
-        flat_high = feat_high.reshape(B, N * S, C)
-        
-        # --- Stream 1: Texture/Object (Layer 8) ---
-        # Use GeM pooling
-        # Permute to (B, C, N*S) for pooling over spatial dim
-        x_mid = flat_mid.permute(0, 2, 1) # (B, 768, N*S)
-        z_texture_raw = self.gem_pool(x_mid) # (B, 768)
-        
-        z_texture = self.texture_projector(z_texture_raw) # (B, d_model)
-        z_texture = F.normalize(z_texture, p=2, dim=-1)
-
-        # --- Stream 2: Structure (Layer 11) ---
-        # Use Standard Mean Pooling
-        z_structure_raw = flat_high.mean(dim=1) # (B, 768)
-        
-        z_structure = self.structure_projector(z_structure_raw) # (B, d_model)
-        z_structure = F.normalize(z_structure, p=2, dim=-1)
-
-        return z_texture, z_structure
+        return Z_result
 
 
 class DummyProcessEncoder(nn.Module):
@@ -221,48 +167,64 @@ class DummyResultEncoder(nn.Module):
     def __init__(self, d_model: int = 128, **kwargs):
         super().__init__()
         self.d_model = d_model
-        self.tex_proj = nn.Linear(768, d_model)
-        self.struc_proj = nn.Linear(768, d_model)
     
-    def forward(self, features_dict: dict) -> tuple:
-        """Simple mean pooling and projection."""
-        # Dummy implementation
-        feat = features_dict['mid'] # (B, N, S, 768)
-        pooled = feat.mean(dim=[1, 2]) # (B, 768)
-        
-        z_tex = F.normalize(self.tex_proj(pooled), p=2, dim=-1)
-        z_struc = F.normalize(self.struc_proj(pooled), p=2, dim=-1)
-        
-        return z_tex, z_struc
+    def forward(self, image_features: torch.Tensor) -> torch.Tensor:
+        """Simple mean pooling."""
+        return image_features.mean(dim=1)
 
 
-class SpatialResultEncoder(nn.Module):
+class RobustResultEncoder(nn.Module):
     """
-    Spatial Result Encoder for post-weld images (Patch-based).
+    Robust Result Encoder for post-weld images using DINO features.
     
-    Projects all patches to output dimension while maintaining spatial structure.
+    Architecture:
+        - Concatenates and projects features from different layers of DINO
+        - 768-dim features from Layer 12 and Layer 8 are concatenated
+        - Projected to 128-dim via a 2-layer MLP
+    
+    Args:
+        dropout (float): Dropout rate (default: 0.1)
     """
-    def __init__(self, input_dim=768, output_dim=128):
+    
+    def __init__(self, dropout: float = 0.1):
         super().__init__()
-        # Use Linear to process sequence, weights shared across patches
-        self.projector = nn.Linear(input_dim, output_dim)
         
-    def forward(self, x):
-        # x shape: (B, N_patches, input_dim)
-        z_result = self.projector(x) 
-        # z_result shape: (B, N_patches, output_dim)
-        # Normalize for Cosine Distance
-        z_result = F.normalize(z_result, p=2, dim=-1)
-        return z_result
-
-
-class DummySpatialResultEncoder(nn.Module):
-    """Dummy Spatial Result Encoder."""
-    def __init__(self, input_dim=768, output_dim=128):
-        super().__init__()
-        self.projector = nn.Linear(input_dim, output_dim)
+        # Projector: 2-layer MLP
+        self.projector = nn.Sequential(
+            nn.Linear(1536, 512),
+            nn.LayerNorm(512),
+            nn.ReLU(),
+            nn.Linear(512, 128),  # Output Z_result
+        )
         
-    def forward(self, x):
-        z_result = self.projector(x)
-        z_result = F.normalize(z_result, p=2, dim=-1)
-        return z_result
+        # Layer norms for DINO features
+        self.norm_l12 = nn.LayerNorm(768)
+        self.norm_l8 = nn.LayerNorm(768)
+    
+    def forward(self, dino_output):
+        """
+        Encode result modality (images) using DINO features.
+        
+        Args:
+            dino_output: Output from DINO model with hidden states
+            
+        Returns:
+            Z_result: Result encoding (B, 128)
+        """
+        # Layer 12: Semantics/Structure (Mean Pooling)
+        feat_l12 = dino_output['hidden_states'][11] 
+        z_l12 = feat_l12.mean(dim=1)  # (B, 768)
+        
+        # Layer 8: Objects/Cracks (Max Pooling for sensitivity)
+        feat_l8 = dino_output['hidden_states'][7]
+        z_l8 = feat_l8.max(dim=1)[0]  # (B, 768)
+
+        # Normalize separately BEFORE concatenation
+        z_l12 = self.norm_l12(z_l12)
+        z_l8 = self.norm_l8(z_l8)
+        
+        # Concat
+        combined = torch.cat([z_l12, z_l8], dim=-1)  # (B, 1536)
+        
+        # Project
+        return self.projector(combined)

@@ -34,6 +34,18 @@ from configs.model_config import *
 from configs.train_config import *
 
 
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom encoder for NumPy data types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
+
 class Trainer:
     """Trainer for quad-modal model with clean logging."""
     
@@ -854,9 +866,10 @@ class Trainer:
         
         log_path = self.log_dir / "training_log.json"
         with open(log_path, 'w') as f:
-            json.dump(log_data, f, indent=2)
+            json.dump(log_data, f, indent=2, cls=NumpyEncoder)
         
         print(f"  Logs saved to: {log_path}")
+
 
 
 def main():

@@ -86,7 +86,7 @@ class Evaluator:
         self.model = create_quadmodal_model(model_config, use_dummy=self.use_dummy)
         
         # Load checkpoint
-        checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model = self.model.to(self.device)
         self.model.eval()
@@ -222,6 +222,18 @@ class Evaluator:
         return results
 
 
+class NumpyEncoder(json.JSONEncoder):
+    """Custom encoder for NumPy data types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
+
+
 def main():
     """Main evaluation function."""
     parser = argparse.ArgumentParser(description="Evaluate quad-modal model")
@@ -340,7 +352,7 @@ def main():
     
     # Save results
     with open(args.output, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(results, f, indent=2, cls=NumpyEncoder)
     
     print("=" * 70)
     print("EVALUATION COMPLETE")

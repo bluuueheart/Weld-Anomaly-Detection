@@ -89,6 +89,25 @@ class WeldingDataset(Dataset):
         self.sensor_len = int(sensor_len)
         self.sensor_channels = int(sensor_channels)
 
+        # Category name to label mapping
+        self.CATEGORY_MAP = {
+            "good": 0,
+            "excessive_convexity": 1,
+            "undercut": 2,
+            "lack_of_fusion": 3,
+            "porosity": 5,
+            "spatter": 6,
+            "burnthrough": 7,
+            "porosity_w_excessive_penetration": 4,
+            "excessive_penetration": 8,
+            "excessive penetration": 8,  # Handle space variant
+            "crater_cracks": 9,
+            "warping": 10,
+            "overlap": 11,
+        }
+        # Create reverse mapping for display
+        self.label_to_name = {v: k for k, v in self.CATEGORY_MAP.items() if k != "excessive penetration"}
+
         if seed is not None:
             random.seed(seed)
             if np is not None:
@@ -125,23 +144,6 @@ class WeldingDataset(Dataset):
         
         sample_paths, labels, splits = [], [], []
         
-        # Category name to label mapping (normalize to match CSV)
-        CATEGORY_MAP = {
-            "good": 0,
-            "excessive_convexity": 1,
-            "undercut": 2,
-            "lack_of_fusion": 3,
-            "porosity": 5,
-            "spatter": 6,
-            "burnthrough": 7,
-            "porosity_w_excessive_penetration": 4,
-            "excessive_penetration": 8,
-            "excessive penetration": 8,  # Handle space variant
-            "crater_cracks": 9,
-            "warping": 10,
-            "overlap": 11,
-        }
-        
         if not os.path.isfile(self.manifest_path):
             return sample_paths, labels, splits
         
@@ -157,7 +159,7 @@ class WeldingDataset(Dataset):
                 
                 # Map category to label
                 category_key = category.lower().replace(' ', '_')
-                label = CATEGORY_MAP.get(category_key, 0)
+                label = self.CATEGORY_MAP.get(category_key, 0)
                 
                 sample_paths.append(subdir)
                 labels.append(label)

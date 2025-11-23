@@ -53,7 +53,7 @@ class ImageEncoder(nn.Module):
                         model_path_resolved,
                         local_files_only=True,
                         trust_remote_code=True,
-                        output_hidden_states=True, # Enable hidden states output
+                        output_hidden_states=True,
                     )
                 except Exception as e:
                     raise RuntimeError(
@@ -79,11 +79,14 @@ class ImageEncoder(nn.Module):
         # Get backbone output dimension
         backbone_dim = self.backbone.config.hidden_size
         
-        # Multi-scale feature dimension (Layer 4 + Layer 12)
-        self.multi_scale_dim = backbone_dim * 2
-        
-        # No projection here, we return raw concatenated features
-        self.projection = nn.Identity()
+        # Projection layer with moderate dropout (trainable even when backbone frozen)
+        if backbone_dim != embed_dim:
+            self.projection = nn.Sequential(
+                nn.Dropout(p=0.2),  # Moderate dropout
+                nn.Linear(backbone_dim, embed_dim),
+            )
+        else:
+            self.projection = nn.Dropout(p=0.2)  # Dropout for Identity case
     
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         """Forward pass.
@@ -92,7 +95,7 @@ class ImageEncoder(nn.Module):
             images: (B, num_angles, 3, H, W) tensor
             
         Returns:
-            features: (B, num_angles, 1536) tensor (concatenated L4+L12 pooled features)
+            features: (B, seq_len, embed_dim) tensor
         """
         B, N, C, H, W = images.shape
         assert N == self.num_angles, f"Expected {self.num_angles} angles, got {N}"
@@ -103,38 +106,7 @@ class ImageEncoder(nn.Module):
         # Extract features with DINOv2
         outputs = self.backbone(pixel_values=images_flat)
         
-        # Extract Layer 4 and Layer 12
-        # hidden_states is a tuple of (B*N, SeqLen, Dim)
-        # Index 0 is embedding, Index 1 is Layer 1, ..., Index 12 is Layer 12 (Final)
-        # We want Layer 4 (index 4) and Layer 12 (index 12)
-        # Note: HuggingFace DINOv2 output_hidden_states includes embeddings at index 0?
-        # Let's check documentation or assume standard HF behavior: 
-        # hidden_states[0] = embeddings, hidden_states[1] = layer 1 output...
-        # So Layer 4 is index 4+1=5? Or just index 4?
-        # Usually hidden_states includes the output of embeddings + one for each layer.
-        # So len(hidden_states) = 13 (1 embedding + 12 layers).
-        # Layer 4 output is at index 4. Layer 12 output is at index 12.
-        
-        hidden_states = outputs.hidden_states
-        
-        # Layer 8 (Mid-level features - Object parts/Cracks)
-        # Index 7 corresponds to Layer 8 in 0-based indexing if 0 is Embed? 
-        # User requested dino_output['hidden_states'][7]
-        feat_mid = hidden_states[7] # (B*N, SeqLen, 768)
-        
-        # Layer 11 (High-level features - Structure/Warping)
-        # User requested dino_output['hidden_states'][10]
-        feat_high = hidden_states[10] # (B*N, SeqLen, 768)
-        
-        # Return raw features for DecoupledGeMEncoder
-        # Reshape to (B, N, SeqLen, 768)
-        feat_mid = feat_mid.reshape(B, N, -1, 768)
-        feat_high = feat_high.reshape(B, N, -1, 768)
-        
-        return {
-            "mid": feat_mid,
-            "high": feat_high
-        }
+        return outputs
 
 
 class DummyImageEncoder(nn.Module):
@@ -163,20 +135,20 @@ class DummyImageEncoder(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
             nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d((1, 1)), # Global pool
+            nn.AdaptiveAvgPool2d((7, 7)),
         )
         
-        # Output 1536 dim to match real encoder
-        self.projection = nn.Linear(256, 1536)
+        # Projection to embed_dim
+        self.projection = nn.Linear(256 * 7 * 7, embed_dim)
     
-    def forward(self, images: torch.Tensor) -> dict:
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
         """Forward pass.
         
         Args:
             images: (B, num_angles, 3, H, W) tensor
             
         Returns:
-            dict: {'l4': (B, N, SeqLen, 768), 'l12': (B, N, SeqLen, 768)}
+            features: (B, 1, embed_dim) tensor (single token per sample)
         """
         B, N, C, H, W = images.shape
         
@@ -184,19 +156,20 @@ class DummyImageEncoder(nn.Module):
         images_flat = images.reshape(B * N, C, H, W)
         
         # Extract features
-        features = self.backbone(images_flat)  # (B*N, 256, 1, 1)
-        features = features.flatten(1)  # (B*N, 256)
-        features = self.projection(features)  # (B*N, 1536)
+        features = self.backbone(images_flat)  # (B*N, 256, 7, 7)
+        features = features.flatten(1)  # (B*N, 256*7*7)
+        features = self.projection(features)  # (B*N, embed_dim)
         
-        # Split into fake mid and high
-        feat_mid = features[:, :768].unsqueeze(1) # Fake seq len 1
-        feat_high = features[:, 768:].unsqueeze(1)
+        # Reshape to (B, N, embed_dim)
+        features = features.reshape(B, N, self.embed_dim)
         
-        # Reshape to (B, N, SeqLen, 768)
-        feat_mid = feat_mid.reshape(B, N, 1, 768)
-        feat_high = feat_high.reshape(B, N, 1, 768)
+        # Aggregate across angles
+        if self.aggregation == "mean":
+            features = features.mean(dim=1, keepdim=True)  # (B, 1, embed_dim)
+        elif self.aggregation == "max":
+            features = features.max(dim=1, keepdim=True)[0]  # (B, 1, embed_dim)
+        else:
+            # concat: (B, N, embed_dim) -> keep as is
+            pass
         
-        return {
-            "mid": feat_mid,
-            "high": feat_high
-        }
+        return features

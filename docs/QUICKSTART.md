@@ -107,7 +107,7 @@ python src/train_causal_film.py
 
 ```bash
 # 在测试集上评估
-bash scripts/evaluate_causal_film.sh /path/to/best_model.pth
+bash scripts/evaluate_causal_film.sh /root/autodl-tmp/outputs/checkpoints/best_model.pth
 
 # 查看结果
 cat /root/autodl-tmp/outputs/eval_results.json

@@ -36,6 +36,18 @@ from configs.model_config import *
 from configs.train_config import *
 
 
+
+class NumpyEncoder(json.JSONEncoder):
+    """Custom encoder for NumPy data types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
+
 class CausalFiLMTrainer:
     """Trainer for Causal-FiLM model with unsupervised anomaly detection."""
     
@@ -285,7 +297,7 @@ class CausalFiLMTrainer:
     def train_epoch(self, epoch: int):
         """Train for one epoch."""
         self.model.train()
-        epoch_losses = {"total": [], "recon": [], "clip_text": []}
+        epoch_losses = {"total": [], "recon_cos": [], "recon_l1": [], "clip_text": []}
         
         epoch_start_time = time.time()
         
@@ -306,10 +318,6 @@ class CausalFiLMTrainer:
                 loss_dict = self.criterion(
                     Z_result=output.get("Z_result"),
                     Z_result_pred=output.get("Z_result_pred"),
-                    Z_texture=output.get("Z_texture"),
-                    Z_structure=output.get("Z_structure"),
-                    Z_texture_pred=output.get("Z_texture_pred"),
-                    Z_structure_pred=output.get("Z_structure_pred"),
                 )
                 loss = loss_dict["total"]
             
@@ -337,7 +345,8 @@ class CausalFiLMTrainer:
             
             # Log losses
             epoch_losses["total"].append(loss.item())
-            epoch_losses["recon"].append(loss_dict["recon"])
+            epoch_losses["recon_cos"].append(loss_dict["recon_cos"])
+            epoch_losses["recon_l1"].append(loss_dict["recon_l1"])
             epoch_losses["clip_text"].append(loss_dict["clip_text"])
             
             self.global_step += 1
@@ -345,11 +354,12 @@ class CausalFiLMTrainer:
             # Print progress
             if (batch_idx + 1) % self.config.get("log_interval", 10) == 0:
                 avg_total = np.mean(epoch_losses["total"][-10:])
-                avg_recon = np.mean(epoch_losses["recon"][-10:])
+                avg_cos = np.mean(epoch_losses["recon_cos"][-10:])
+                avg_l1 = np.mean(epoch_losses["recon_l1"][-10:])
                 avg_clip = np.mean(epoch_losses["clip_text"][-10:])
                 lr = self.optimizer.param_groups[0]["lr"]
                 print(f"    Batch [{batch_idx+1:3d}/{len(self.train_loader):3d}] "
-                      f"Loss: {avg_total:.4f} (R: {avg_recon:.4f}, C: {avg_clip:.4f}) "
+                      f"Loss: {avg_total:.4f} (Cos: {avg_cos:.4f}, L1: {avg_l1:.4f}, C: {avg_clip:.4f}) "
                       f"LR: {lr:.2e}")
         
         epoch_time = time.time() - epoch_start_time
@@ -358,7 +368,8 @@ class CausalFiLMTrainer:
         epoch_stats = {
             "epoch": epoch,
             "loss": np.mean(epoch_losses["total"]),
-            "recon_loss": np.mean(epoch_losses["recon"]),
+            "recon_cos_loss": np.mean(epoch_losses["recon_cos"]),
+            "recon_l1_loss": np.mean(epoch_losses["recon_l1"]),
             "clip_text_loss": np.mean(epoch_losses["clip_text"]),
             "lr": self.optimizer.param_groups[0]["lr"],
             "epoch_time": epoch_time,
@@ -370,7 +381,7 @@ class CausalFiLMTrainer:
     def validate(self, epoch: int):
         """Validate model."""
         self.model.eval()
-        val_losses = {"total": [], "recon": [], "clip_text": []}
+        val_losses = {"total": [], "recon_cos": [], "recon_l1": [], "clip_text": []}
         anomaly_scores = []
         labels = []
         
@@ -382,24 +393,17 @@ class CausalFiLMTrainer:
             loss_dict = self.criterion(
                 Z_result=output.get("Z_result"),
                 Z_result_pred=output.get("Z_result_pred"),
-                Z_texture=output.get("Z_texture"),
-                Z_structure=output.get("Z_structure"),
-                Z_texture_pred=output.get("Z_texture_pred"),
-                Z_structure_pred=output.get("Z_structure_pred"),
             )
             
             val_losses["total"].append(loss_dict["total"].item())
-            val_losses["recon"].append(loss_dict["recon"])
+            val_losses["recon_cos"].append(loss_dict["recon_cos"])
+            val_losses["recon_l1"].append(loss_dict["recon_l1"])
             val_losses["clip_text"].append(loss_dict["clip_text"])
             
             # Compute anomaly scores
             scores = self.model.compute_anomaly_score(
                 Z_result=output.get("Z_result"),
                 Z_result_pred=output.get("Z_result_pred"),
-                Z_texture=output.get("Z_texture"),
-                Z_structure=output.get("Z_structure"),
-                Z_texture_pred=output.get("Z_texture_pred"),
-                Z_structure_pred=output.get("Z_structure_pred"),
             )
             anomaly_scores.append(scores.cpu())
             
@@ -411,7 +415,8 @@ class CausalFiLMTrainer:
         val_stats = {
             "epoch": epoch,
             "loss": np.mean(val_losses["total"]),
-            "recon_loss": np.mean(val_losses["recon"]),
+            "recon_cos_loss": np.mean(val_losses["recon_cos"]),
+            "recon_l1_loss": np.mean(val_losses["recon_l1"]),
             "clip_text_loss": np.mean(val_losses["clip_text"]),
             "mean_anomaly_score": anomaly_scores_cat.mean().item(),
             "std_anomaly_score": anomaly_scores_cat.std().item(),
@@ -446,7 +451,8 @@ class CausalFiLMTrainer:
             self.train_log.append(train_stats)
             
             print(f"\n  [TRAIN] Loss: {train_stats['loss']:.4f} | "
-                  f"Recon: {train_stats['recon_loss']:.4f} | "
+                  f"Cos: {train_stats['recon_cos_loss']:.4f} | "
+                  f"L1: {train_stats['recon_l1_loss']:.4f} | "
                   f"CLIP: {train_stats['clip_text_loss']:.4f} | "
                   f"LR: {train_stats['lr']:.2e} | "
                   f"Time: {train_stats['epoch_time']:.1f}s")
@@ -457,7 +463,8 @@ class CausalFiLMTrainer:
                 self.val_log.append(val_stats)
                 
                 print(f"  [VAL]   Loss: {val_stats['loss']:.4f} | "
-                      f"Recon: {val_stats['recon_loss']:.4f} | "
+                      f"Cos: {val_stats['recon_cos_loss']:.4f} | "
+                      f"L1: {val_stats['recon_l1_loss']:.4f} | "
                       f"CLIP: {val_stats['clip_text_loss']:.4f}")
                 print(f"  [SCORE] Mean: {val_stats['mean_anomaly_score']:.4f} | "
                       f"Std: {val_stats['std_anomaly_score']:.4f} | "
@@ -536,7 +543,8 @@ class CausalFiLMTrainer:
             json.dump({
                 "train_log": self.train_log,
                 "val_log": self.val_log,
-            }, f, indent=2)
+            }, f, indent=2, cls=NumpyEncoder)
+
 
 
 def main():

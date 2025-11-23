@@ -19,14 +19,8 @@ from .video_encoder import VideoEncoder, DummyVideoEncoder
 from .image_encoder import ImageEncoder, DummyImageEncoder
 from .audio_encoder import AudioEncoder, DummyAudioEncoder
 from .film_modulation import SensorModulator, DummySensorModulator, apply_film_modulation
-from .causal_encoders import (
-    ProcessEncoder, ResultEncoder, DummyProcessEncoder, DummyResultEncoder,
-    SpatialResultEncoder, DummySpatialResultEncoder
-)
-from .causal_decoder import (
-    CausalDecoder, DummyCausalDecoder,
-    SpatialCausalDecoder, DummySpatialCausalDecoder
-)
+from .causal_encoders import ProcessEncoder, ResultEncoder, DummyProcessEncoder, DummyResultEncoder, RobustResultEncoder
+from .causal_decoder import CausalDecoder, DummyCausalDecoder, AntiGenDecoder
 
 
 class CausalFiLMModel(nn.Module):
@@ -124,12 +118,11 @@ class CausalFiLMModel(nn.Module):
             )
             
             # Image encoder (DINOv2)
-            aggregation = image_config.get("aggregation", "mean")
             self.image_encoder = ImageEncoder(
                 model_name=image_config.get("model_name", "facebook/dinov2-base"),
                 embed_dim=768,
                 num_angles=image_config.get("num_angles", 5),
-                aggregation=aggregation,
+                aggregation="none",  # We handle aggregation in ResultEncoder
                 freeze_backbone=True,  # Always frozen
                 local_model_path=image_config.get("local_model_path"),
             )
@@ -153,7 +146,7 @@ class CausalFiLMModel(nn.Module):
         # ===== L2: Causal Encoders =====
         if use_dummy:
             self.process_encoder = DummyProcessEncoder(d_model=d_model)
-            self.result_encoder = DummyResultEncoder(d_model=d_model, input_dim=1536)
+            self.result_encoder = DummyResultEncoder(d_model=d_model)
         else:
             self.process_encoder = ProcessEncoder(
                 d_model=d_model,
@@ -161,11 +154,8 @@ class CausalFiLMModel(nn.Module):
                 num_layers=2,
                 dropout=0.1,
             )
-            self.result_encoder = ResultEncoder(
-                d_model=d_model,
-                input_dim=1536,
-                dropout=0.1,
-            )
+            # self.result_encoder = ResultEncoder(d_model=d_model, dropout=0.1)
+            self.result_encoder = RobustResultEncoder()
         
         # ===== L3: Anti-Generalization Decoder =====
         if use_dummy:
@@ -174,12 +164,8 @@ class CausalFiLMModel(nn.Module):
                 dropout_p=decoder_dropout,
             )
         else:
-            self.decoder = CausalDecoder(
-                d_model=d_model,
-                num_layers=decoder_num_layers,
-                nhead=4,
-                dropout_p=decoder_dropout,
-            )
+            # self.decoder = CausalDecoder(...)
+            self.decoder = AntiGenDecoder(d_model=d_model)
         
         # Output dimension
         self.output_dim = d_model
@@ -215,12 +201,12 @@ class CausalFiLMModel(nn.Module):
         with torch.no_grad():
             F_video_raw = self.video_encoder(video)  # (B, T_v, 1024)
             F_audio_raw = self.audio_encoder(audio)  # (B, T_a, 768)
-            F_image_raw = self.image_encoder(images)  # (B, N, 768)
+            # F_image_raw = self.image_encoder(images)  # (B, N, 768)
+            dino_outputs = self.image_encoder(images) # New: dict with hidden_states
         
         # Project to unified dimension d_model=128
         F_video = self.video_projector(F_video_raw)  # (B, T_v, 128)
         F_audio = self.audio_projector(F_audio_raw)  # (B, T_a, 128)
-        # F_image_raw is now (B, N, 1536), we skip projection here as ResultEncoder handles it
         # F_image = self.image_projector(F_image_raw)  # (B, N, 128)
         
         # ===== L1: FiLM Sensor Modulation =====
@@ -234,28 +220,29 @@ class CausalFiLMModel(nn.Module):
         # Process encoder: video (modulated) attends to audio (modulated)
         Z_process = self.process_encoder(F_video_mod, F_audio_mod)  # (B, 128)
         
-        # Result encoder: Decoupled Dual-Stream encoding
-        # F_image_raw is dict {'mid': ..., 'high': ...}
-        Z_texture, Z_structure = self.result_encoder(F_image_raw)  # (B, 128), (B, 128)
+        # Result encoder: aggregate multi-view images
+        # Z_result = self.result_encoder(F_image)  # (B, 128)
+        
+        # New Result Encoder Logic
+        # dino_outputs has hidden_states for B*N images
+        # RobustResultEncoder processes them to (B*N, 128)
+        Z_result_flat = self.result_encoder(dino_outputs)
+        
+        # Reshape and aggregate
+        B = images.shape[0]
+        N = images.shape[1]
+        Z_result = Z_result_flat.view(B, N, -1).mean(dim=1) # (B, 128)
         
         # ===== L3: Reconstruction via Decoder =====
         # During training, use noisy bottleneck; during inference, no noise
-        is_training = self.training
-        Z_texture_pred, Z_structure_pred = self.decoder(Z_process, is_training=is_training)  # (B, 128), (B, 128)
+        # is_training = self.training
+        # Z_result_pred = self.decoder(Z_process, is_training=is_training)  # (B, 128)
+        Z_result_pred = self.decoder(Z_process)
         
         # Build output
         output = {
-            "Z_texture": Z_texture,
-            "Z_structure": Z_structure,
-            "Z_texture_pred": Z_texture_pred,
-            "Z_structure_pred": Z_structure_pred,
-            # For compatibility with existing training loop (which expects Z_result/Z_result_pred)
-            # We pass the structure vector as the "main" result for logging, 
-            # but the loss function will use the specific keys if available.
-            # Actually, we should update the loss function to look for these keys.
-            # But to prevent crash if loss function isn't updated yet (though I will update it):
-            "Z_result": Z_structure, 
-            "Z_result_pred": Z_structure_pred,
+            "Z_result": Z_result,
+            "Z_result_pred": Z_result_pred,
         }
         
         if return_encodings:
@@ -267,35 +254,24 @@ class CausalFiLMModel(nn.Module):
     
     def compute_anomaly_score(
         self,
-        Z_texture: torch.Tensor,
-        Z_structure: torch.Tensor,
-        Z_texture_pred: torch.Tensor,
-        Z_structure_pred: torch.Tensor,
-        **kwargs # Absorb extra args like Z_result
+        Z_result: torch.Tensor,
+        Z_result_pred: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Compute anomaly score based on weighted reconstruction error.
-        
-        Score = 0.7 * Texture_Error + 0.3 * Structure_Error
+        Compute anomaly score based on reconstruction error.
         
         Args:
-            Z_texture: Ground truth texture vector
-            Z_structure: Ground truth structure vector
-            Z_texture_pred: Predicted texture vector
-            Z_structure_pred: Predicted structure vector
+            Z_result: Ground truth result encoding (B, d_model)
+            Z_result_pred: Reconstructed result encoding (B, d_model)
             
         Returns:
             anomaly_score: Anomaly score per sample (B,)
         """
-        # Texture distance (Cracks)
-        dist_texture = 1.0 - F.cosine_similarity(Z_texture, Z_texture_pred, dim=1)
+        # Anomaly score = Cosine + 10 * L1
+        dist_cos = 1.0 - F.cosine_similarity(Z_result, Z_result_pred, dim=1)
+        dist_l1 = torch.mean(torch.abs(Z_result - Z_result_pred), dim=1)
         
-        # Structure distance (Warping)
-        dist_structure = 1.0 - F.cosine_similarity(Z_structure, Z_structure_pred, dim=1)
-        
-        # Weighted Sum
-        anomaly_score = 0.7 * dist_texture + 0.3 * dist_structure
-        
+        anomaly_score = dist_cos + 10.0 * dist_l1
         return anomaly_score
     
     def get_feature_dim(self) -> int:

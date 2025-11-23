@@ -43,6 +43,18 @@ from configs.model_config import *
 from configs.train_config import OUTPUT_DIR
 
 
+class NumpyEncoder(json.JSONEncoder):
+    """Custom encoder for NumPy data types."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super(NumpyEncoder, self).default(obj)
+
+
 class CausalFiLMEvaluator:
     """Evaluator for Causal-FiLM using anomaly scores."""
     
@@ -84,7 +96,7 @@ class CausalFiLMEvaluator:
         self.model = create_causal_film_model(model_config, use_dummy=self.use_dummy)
         
         # Load checkpoint
-        checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+        checkpoint = torch.load(self.checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model = self.model.to(self.device)
         self.model.eval()
@@ -138,21 +150,10 @@ class CausalFiLMEvaluator:
                     Z_structure_pred=output["Z_structure_pred"],
                 )
             else:
-                # Fallback for legacy models if compute_anomaly_score supports it
-                # Note: V7.1 compute_anomaly_score requires texture/structure args.
-                # If we are running V7.1 code with V7.0 model weights, forward() might behave differently?
-                # Actually, if the class is V7.1, forward() ALWAYS returns Z_texture etc.
-                # So this branch is theoretically unreachable if using V7.1 code.
-                # But for safety/debugging:
+                # Fallback for legacy models or Plan E model
                 scores = self.model.compute_anomaly_score(
                     Z_result=output["Z_result"],
                     Z_result_pred=output["Z_result_pred"],
-                    # Pass dummies if needed to satisfy signature, or rely on kwargs if signature was flexible
-                    # But current signature is strict. We should assume V7.1 forward output.
-                    Z_texture=output.get("Z_texture", output["Z_result"]), # Hack fallback
-                    Z_structure=output.get("Z_structure", output["Z_result"]),
-                    Z_texture_pred=output.get("Z_texture_pred", output["Z_result_pred"]),
-                    Z_structure_pred=output.get("Z_structure_pred", output["Z_result_pred"]),
                 )
             
             all_scores.append(scores.cpu())
@@ -327,7 +328,11 @@ class CausalFiLMEvaluator:
         # Compute AUPRO up to fpr_limit
         idx_limit = np.searchsorted(sorted_fprs, fpr_limit)
         if idx_limit > 0:
-            aupro = np.trapz(sorted_pros[:idx_limit], sorted_fprs[:idx_limit]) / fpr_limit
+            # Use trapezoid if available (NumPy 2.0+), else trapz
+            if hasattr(np, "trapezoid"):
+                aupro = np.trapezoid(sorted_pros[:idx_limit], sorted_fprs[:idx_limit]) / fpr_limit
+            else:
+                aupro = np.trapz(sorted_pros[:idx_limit], sorted_fprs[:idx_limit]) / fpr_limit
         else:
             aupro = 0.0
         
@@ -564,7 +569,7 @@ def main():
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     with open(output_path, "w") as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(metrics, f, indent=2, cls=NumpyEncoder)
     
     print("=" * 70)
     print(f"Results saved to: {output_path}")
