@@ -21,6 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
+from sklearn.metrics import roc_auc_score
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -74,7 +75,7 @@ class CausalFiLMTrainer:
         # Training state
         self.current_epoch = 0
         self.global_step = 0
-        self.best_metric = float('inf')  # Lower is better for reconstruction loss
+        self.best_metric = -float('inf')  # Higher is better for AUROC
         
         # Early stopping
         self.early_stopping_patience = config.get("early_stopping_patience", 0)
@@ -412,12 +413,27 @@ class CausalFiLMTrainer:
         
         # Compute validation statistics
         anomaly_scores_cat = torch.cat(anomaly_scores)
+        
+        # Compute AUROC if labels are available
+        auroc = 0.0
+        if len(labels) > 0:
+            labels_cat = torch.cat(labels)
+            # Convert to binary labels (0=normal, >0=anomaly)
+            binary_labels = (labels_cat != 0).long().numpy()
+            scores_np = anomaly_scores_cat.numpy()
+            try:
+                auroc = roc_auc_score(binary_labels, scores_np)
+            except Exception as e:
+                print(f"Warning: Could not compute AUROC: {e}")
+                auroc = 0.0
+
         val_stats = {
             "epoch": epoch,
             "loss": np.mean(val_losses["total"]),
             "recon_cos_loss": np.mean(val_losses["recon_cos"]),
             "recon_l1_loss": np.mean(val_losses["recon_l1"]),
             "clip_text_loss": np.mean(val_losses["clip_text"]),
+            "auroc": auroc,
             "mean_anomaly_score": anomaly_scores_cat.mean().item(),
             "std_anomaly_score": anomaly_scores_cat.std().item(),
             "min_anomaly_score": anomaly_scores_cat.min().item(),
@@ -466,18 +482,18 @@ class CausalFiLMTrainer:
                       f"Cos: {val_stats['recon_cos_loss']:.4f} | "
                       f"L1: {val_stats['recon_l1_loss']:.4f} | "
                       f"CLIP: {val_stats['clip_text_loss']:.4f}")
-                print(f"  [SCORE] Mean: {val_stats['mean_anomaly_score']:.4f} | "
-                      f"Std: {val_stats['std_anomaly_score']:.4f} | "
-                      f"Range: [{val_stats['min_anomaly_score']:.4f}, {val_stats['max_anomaly_score']:.4f}]")
+                print(f"  [SCORE] AUROC: {val_stats['auroc']:.4f} | "
+                      f"Mean: {val_stats['mean_anomaly_score']:.4f} | "
+                      f"Std: {val_stats['std_anomaly_score']:.4f}")
                 
-                # Check for improvement
-                current_metric = val_stats["loss"]
-                if current_metric < self.best_metric:
-                    improvement = self.best_metric - current_metric
+                # Check for improvement (maximize AUROC)
+                current_metric = val_stats["auroc"]
+                if current_metric > self.best_metric:
+                    improvement = current_metric - self.best_metric
                     self.best_metric = current_metric
                     self.epochs_without_improvement = 0
                     self._save_checkpoint(epoch, is_best=True)
-                    print(f"  [BEST]  New best model saved! Loss improved by {improvement:.4f}")
+                    print(f"  [BEST]  New best model saved! AUROC improved by {improvement:.4f}")
                 else:
                     self.epochs_without_improvement += 1
                     print(f"  [INFO]  No improvement for {self.epochs_without_improvement} epoch(s)")
@@ -492,10 +508,8 @@ class CausalFiLMTrainer:
             # Step scheduler
             self.scheduler.step()
             
-            # Save checkpoint periodically
-            if epoch % self.config.get("save_interval", 5) == 0:
-                self._save_checkpoint(epoch, is_best=False)
-                print(f"  [SAVE]  Checkpoint saved at epoch {epoch}")
+            # Save latest checkpoint
+            self._save_checkpoint(epoch, is_best=False)
             
             print()
         
@@ -508,7 +522,7 @@ class CausalFiLMTrainer:
         print("TRAINING COMPLETE")
         print("=" * 70)
         print(f"Total time: {hours:02d}h {minutes:02d}m {seconds:02d}s")
-        print(f"Best validation loss: {self.best_metric:.4f}")
+        print(f"Best validation AUROC: {self.best_metric:.4f}")
         print(f"Total epochs trained: {len(self.train_log)}")
         print(f"Checkpoints saved to: {self.checkpoint_dir}")
         print(f"Logs saved to: {self.log_dir}")
@@ -533,7 +547,7 @@ class CausalFiLMTrainer:
             path = self.checkpoint_dir / "best_model.pth"
             torch.save(checkpoint, path)
         else:
-            path = self.checkpoint_dir / f"checkpoint_epoch_{epoch}.pth"
+            path = self.checkpoint_dir / "latest_model.pth"
             torch.save(checkpoint, path)
     
     def _save_logs(self):

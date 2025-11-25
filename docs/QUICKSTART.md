@@ -10,9 +10,10 @@
 1. [环境准备](#1-环境准备)
 2. [模型选择](#2-模型选择)
 3. [Causal-FiLM使用指南](#3-causal-film使用指南)
-4. [SupCon使用指南](#4-supcon使用指南)
-5. [预期输出](#5-预期输出)
-6. [故障排查](#6-故障排查)
+4. [Late Fusion使用指南](#4-late-fusion使用指南)
+5. [SupCon使用指南](#5-supcon使用指南)
+6. [预期输出](#6-预期输出)
+7. [故障排查](#7-故障排查)
 
 ---
 
@@ -93,6 +94,15 @@ bash scripts/train_causal_film.sh
 
 # 或直接运行Python
 python src/train_causal_film.py
+
+# 从最佳检查点恢复训练
+python src/train_causal_film.py --resume best
+
+# 从最新检查点恢复训练
+python src/train_causal_film.py --resume latest
+
+# 从指定检查点恢复训练
+python src/train_causal_film.py --resume /path/to/checkpoint_epoch_50.pth
 ```
 
 **训练参数** (在 `configs/train_config.py` 中配置):
@@ -145,16 +155,40 @@ with torch.no_grad():
 
 ---
 
-## 4. SupCon使用指南
+## 4. Late Fusion使用指南 (Plan E + Video AE)
 
-### 4.1 训练
+为了进一步提升SOTA性能，我们引入了**Late Fusion**策略，结合Causal-FiLM模型与专用的Video Autoencoder。
+
+### 4.1 训练 Video Autoencoder
+
+Video Autoencoder 专门用于捕捉视频/图像中的外观异常（如 Convexity）。
+
+```bash
+# 训练 Video Autoencoder (仅用正常样本)
+bash scripts/train_video_ae.sh
+```
+
+### 4.2 评估融合模型
+
+融合模型结合了 Causal-FiLM (Plan E) 和 Video Autoencoder 的分数。
+
+```bash
+# 评估融合模型 (需已有 Causal-FiLM 权重 checkpoints/best_model.pth)
+bash scripts/evaluate_fusion.sh
+```
+
+---
+
+## 5. SupCon使用指南
+
+### 5.1 训练
 
 ```bash
 # 使用SupCon训练
 bash scripts/train.sh
 ```
 
-### 4.2 评估
+### 5.2 评估
 
 ```bash
 # k-NN评估
@@ -163,9 +197,9 @@ bash scripts/evaluate.sh
 
 ---
 
-## 5. 预期输出
+## 6. 预期输出
 
-### 5.1 Causal-FiLM训练输出
+### 6.1 Causal-FiLM训练输出
 
 ```
 ======================================================================

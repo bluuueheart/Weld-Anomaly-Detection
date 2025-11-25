@@ -174,57 +174,35 @@ class DummyResultEncoder(nn.Module):
 
 
 class RobustResultEncoder(nn.Module):
-    """
-    Robust Result Encoder for post-weld images using DINO features.
-    
-    Architecture:
-        - Concatenates and projects features from different layers of DINO
-        - 768-dim features from Layer 12 and Layer 8 are concatenated
-        - Projected to 128-dim via a 2-layer MLP
-    
-    Args:
-        dropout (float): Dropout rate (default: 0.1)
-    """
-    
-    def __init__(self, dropout: float = 0.1):
+    def __init__(self, output_dim=128):
         super().__init__()
-        
-        # Projector: 2-layer MLP
-        self.projector = nn.Sequential(
-            nn.Linear(1536, 512),
-            nn.LayerNorm(512),
-            nn.ReLU(),
-            nn.Linear(512, 128),  # Output Z_result
-        )
-        
-        # Layer norms for DINO features
+        # 1. 独立的 LayerNorm (防止特征淹没的关键)
         self.norm_l12 = nn.LayerNorm(768)
         self.norm_l8 = nn.LayerNorm(768)
-    
-    def forward(self, dino_output):
-        """
-        Encode result modality (images) using DINO features.
         
-        Args:
-            dino_output: Output from DINO model with hidden states
-            
-        Returns:
-            Z_result: Result encoding (B, 128)
-        """
-        # Layer 12: Semantics/Structure (Mean Pooling)
-        feat_l12 = dino_output['hidden_states'][11] 
-        z_l12 = feat_l12.mean(dim=1)  # (B, 768)
-        
-        # Layer 8: Objects/Cracks (Max Pooling for sensitivity)
-        feat_l8 = dino_output['hidden_states'][7]
-        z_l8 = feat_l8.max(dim=1)[0]  # (B, 768)
+        # 2. 单流投影 (1536 -> 128)
+        self.projector = nn.Sequential(
+            nn.Linear(768 * 2, 512),
+            nn.LayerNorm(512),
+            nn.ReLU(),
+            nn.Linear(512, output_dim)
+        )
 
-        # Normalize separately BEFORE concatenation
+    def forward(self, dino_output):
+        # 3. 提取特征
+        # Layer 12 (结构): 使用 Mean Pooling
+        feat_l12 = dino_output['hidden_states'][11] 
+        z_l12 = feat_l12.mean(dim=1) 
+        
+        # Layer 8 (纹理): 使用 Max Pooling (捕捉裂纹)
+        feat_l8 = dino_output['hidden_states'][7]
+        z_l8 = feat_l8.max(dim=1)[0] 
+
+        # 4. 独立归一化 (Plan E 的灵魂)
         z_l12 = self.norm_l12(z_l12)
         z_l8 = self.norm_l8(z_l8)
         
-        # Concat
-        combined = torch.cat([z_l12, z_l8], dim=-1)  # (B, 1536)
+        # 5. 拼接
+        combined = torch.cat([z_l12, z_l8], dim=-1) # (B, 1536)
         
-        # Project
         return self.projector(combined)

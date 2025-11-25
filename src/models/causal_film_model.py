@@ -155,7 +155,7 @@ class CausalFiLMModel(nn.Module):
                 dropout=0.1,
             )
             # self.result_encoder = ResultEncoder(d_model=d_model, dropout=0.1)
-            self.result_encoder = RobustResultEncoder()
+            self.result_encoder = RobustResultEncoder(output_dim=d_model)
         
         # ===== L3: Anti-Generalization Decoder =====
         if use_dummy:

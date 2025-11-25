@@ -49,15 +49,21 @@ This file consolidates recent updates and code-change notes. It is a curated, hu
 - ❌ `compute_pro_metric()` 方法
 - ❌ `compute_metrics_with_pro()` 方法
 
-**Implemented Reliable Image-Level Metrics**:
-- ✅ **I-AUROC / AUC**: Area Under ROC Curve (主指标)
-- ✅ **I-AP / I-mAP**: Average Precision
-- ✅ **Accuracy (Acc)**: Overall classification accuracy
-- ✅ **F1-Score (F1)**: Harmonic mean of precision and recall
-- ✅ **FDR**: False Discovery Rate = FP / (FP + TP)
-- ✅ **MDR**: Missed Detection Rate = FN / (FN + TP)
-- ✅ **Precision / Recall**: At optimal threshold (Youden's J)
-- ✅ **Confusion Matrix**: TP, FP, TN, FN
+### 2025-11-25 — Late Fusion Strategy (Plan E + Video AE)
+
+#### Goal
+Reach SOTA by combining Causal-FiLM (Plan E) with a dedicated Video Autoencoder for Convexity detection.
+
+#### Changes
+- **New Model**: `SimpleVideoAE` (MLP Autoencoder) for video features.
+  - Input: DINOv2 Layer 12 Mean Features (768 dim).
+  - Architecture: 768 -> 128 -> 64 -> 128 -> 768.
+- **New Scripts**:
+  - `src/train_video_ae.py`: Trains the Video AE on normal samples.
+  - `src/evaluate_fusion.py`: Evaluates fusion of Causal-FiLM and Video AE.
+- **Fusion Logic**:
+  - Standardize scores (Z-score normalization) from both models.
+  - Sum standardized scores: `Final = Z_A (Causal) + Z_B (VideoAE)`.
 
 #### Code Changes
 

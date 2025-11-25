@@ -21,8 +21,69 @@
                                                       ↓ (解码)
 焊后图像 → DINOv2 → 特征 → ResultEncoder → Z_result ← Z_result_pred
                                               ↓ (比较)
-                                        异常分数 = 1 - cos_sim
+                                        异常分数 = 1 - cos_sim + 10 * L1
 ```
+
+### 详细组件说明
+
+#### 1. L0: 冻结特征提取器 (Frozen Backbones)
+- **Video**: `V-JEPA` (vit-based, 1024 dim), 冻结。投影至 256 维。
+- **Audio**: `AST` (Audio Spectrogram Transformer, 768 dim), 冻结。投影至 256 维。
+- **Image**: `DINOv2` (ViT-Base, 768 dim), 冻结。提取 Layer 12 (Mean Pool) 和 Layer 8 (Max Pool) 特征。
+- **Sensor**: 原始 6 通道时间序列数据。
+
+#### 2. L1: FiLM 传感器调制 (Sensor Modulation)
+- **SensorModulator**: 
+  - 输入: 6 通道传感器数据
+  - 结构: GRU/LSTM -> MLP -> 输出 `gamma`, `beta` (1, 256)
+  - 作用: 生成全局上下文仿射变换参数
+- **调制操作**: $F_{mod} = F \cdot \gamma + \beta$
+  - 应用于视频和音频特征，注入工艺参数上下文。
+
+#### 3. L2: 因果分层编码器 (Causal Encoders)
+- **ProcessEncoder (过程编码)**:
+  - 输入: 调制后的视频 (Query) 和音频 (Key/Value)
+  - 结构: 2层 Cross-Attention Transformer, 4 Heads
+  - 输出: `Z_process` (256 dim)
+  - 逻辑: 视频关注音频，捕捉焊接过程中的声光交互。
+- **RobustResultEncoder (结果编码)**:
+  - 输入: DINOv2 的 Layer 12 (结构语义) 和 Layer 8 (纹理细节)
+  - 结构: 
+    - 独立 LayerNorm: 分别归一化 L12 和 L8 特征
+    - 拼接: Concat(L12, L8) -> 1536 dim
+    - 投影: MLP (1536 -> 512 -> ReLU -> 256)
+  - 输出: `Z_result` (256 dim)
+  - 逻辑: 融合高层语义与底层纹理，增强对微小裂纹的敏感度。
+
+#### 4. L3: 反泛化解码器 (Anti-Generalization Decoder)
+- **AntiGenDecoder**:
+  - 输入: `Z_process`
+  - 结构: 单流 MLP (256 -> 256)
+  - 输出: `Z_result_pred`
+  - 逻辑: 仅通过过程特征预测结果特征。由于仅在正常样本上训练，模型无法预测异常过程产生的结果，从而产生高重建误差。
+
+#### 5. L4: 复合损失函数 (Loss Function)
+- **CausalFILMLoss**:
+  - **Cosine Distance**: $1 - \text{cosine\_similarity}(Z_{result}, Z_{pred})$ (关注方向一致性)
+  - **L1 Distance**: $\text{mean}(|Z_{result} - Z_{pred}|)$ (关注强度差异，权重 10.0)
+  - **CLIP Text Constraint**: 强制 $Z_{pred}$ 与 "a normal weld" 的 CLIP 嵌入对齐 (权重 0.1)
+  - **总损失**: $L_{total} = L_{cos} + 10.0 \cdot L_{L1} + 0.1 \cdot L_{text}$
+
+### 训练配置 (Training Config)
+
+- **优化器**: AdamW
+  - Learning Rate: 1e-4
+  - Weight Decay: 1e-4
+  - Betas: (0.9, 0.999)
+- **调度器**: Cosine Annealing with Warmup
+  - Warmup Epochs: 2
+  - Warmup Start LR: 1e-6
+  - Min LR: 1e-7
+- **超参数**:
+  - Batch Size: 32
+  - Epochs: 100
+  - `d_model`: 256
+  - Early Stopping: Patience 8 (监控 `val_auroc`)
 
 ### 快速使用
 
@@ -31,16 +92,37 @@
 bash scripts/train_causal_film.sh
 
 # 评估
-bash scripts/evaluate_causal_film.sh /path/to/best_model.pth
+bash scripts/evaluate_causal_film.sh /root/autodl-tmp/outputs/checkpoints/best_model.pth
 ```
 
 **关键创新**:
 - ✅ 传感器作为上下文（FiLM调制），而非直接融合
 - ✅ 因果分层：显式建模"过程→结果"
-- ✅ Linear Attention防止过拟合到异常
-- ✅ CLIP文本约束强制语义正常性
+- ✅ RobustResultEncoder：双层特征融合 (L12+L8) 捕捉细微缺陷
+- ✅ L1 Loss 主导：增强对异常强度的敏感性
 
 详见：`README_v2.md`（技术方案）、`docs/CHANGELOG.md`（实现细节）、`docs/QUICKSTART.md`（使用指南）
+
+---
+
+## 🆕 Late Fusion Strategy (Plan E + Video AE)
+
+为了进一步提升SOTA性能，我们引入了**Late Fusion**策略，结合Causal-FiLM模型与专用的Video Autoencoder。
+
+### 核心思想
+- **Model A (Causal-FiLM)**: 负责捕捉过程与结果的因果违规（Cracks等）。
+- **Model B (Video AE)**: 负责捕捉视频/图像中的外观异常（Convexity等）。
+- **Fusion**: 对两者的异常分数进行标准化（Z-score），然后相加。
+
+### 快速使用
+
+```bash
+# 1. 训练 Video Autoencoder
+bash scripts/train_video_ae.sh
+
+# 2. 评估融合模型 (需已有 Causal-FiLM 权重)
+bash scripts/evaluate_fusion.sh
+```
 
 ---
 

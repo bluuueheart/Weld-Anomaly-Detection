@@ -5,13 +5,13 @@ TRAIN_CONFIG = {
     # Optimization
     "batch_size": 32,  # Increased for SupConLoss (need more positive pairs per batch)
     "num_epochs": 100,
-    "learning_rate": 2e-5,  # Restored from 3e-5 for faster early convergence
-    "weight_decay": 1e-2,  # Further increased to 0.01 (very strong L2)
+    "learning_rate": 1e-4,  # Increased for faster convergence (target >0.9 AUROC in 20 epochs)
+    "weight_decay": 1e-4,  # Reduced from 1e-2 to allow faster feature adaptation
     "optimizer": "adamw",  # "adam", "adamw", "sgd"
     
     # Learning rate schedule (with linear warmup)
     "lr_scheduler": "cosine_warmup",  # "cosine", "cosine_warmup", "step", "plateau", "none"
-    "warmup_epochs": 5,  # Reduced from 10 (faster convergence to good solution)
+    "warmup_epochs": 2,  # Reduced from 5 for faster startup
     "warmup_start_lr": 1e-6,  # Higher start LR
     "min_lr": 1e-7,  # Lower floor to allow aggressive decay
     
@@ -49,7 +49,7 @@ TRAIN_CONFIG = {
     # Checkpoint
     "resume": None,  # Path to checkpoint to resume from
     "save_best_only": True,
-    "monitor_metric": "val_loss",  # Metric to monitor for best model
+    "monitor_metric": "val_auroc",  # Monitor AUROC directly
     
     # Device
     "device": "cuda",  # "cuda", "cpu", "cuda:0"
