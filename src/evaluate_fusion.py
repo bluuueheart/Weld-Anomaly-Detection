@@ -65,7 +65,8 @@ def main():
     model_a = create_causal_film_model(model_config, use_dummy=False)
     
     if os.path.exists(CHECKPOINT_A):
-        checkpoint_a = torch.load(CHECKPOINT_A, map_location=DEVICE)
+        # Set weights_only=False to handle numpy scalars in checkpoints (PyTorch 2.6+ default change)
+        checkpoint_a = torch.load(CHECKPOINT_A, map_location=DEVICE, weights_only=False)
         # Handle if checkpoint is full dict or just state_dict
         if "model_state_dict" in checkpoint_a:
             model_a.load_state_dict(checkpoint_a["model_state_dict"])
@@ -83,7 +84,7 @@ def main():
     model_b = SimpleVideoAE(input_dim=VIDEO_AE_CONFIG["input_dim"])
     
     if os.path.exists(CHECKPOINT_B):
-        model_b.load_state_dict(torch.load(CHECKPOINT_B, map_location=DEVICE))
+        model_b.load_state_dict(torch.load(CHECKPOINT_B, map_location=DEVICE, weights_only=False))
     else:
         print(f"Warning: Checkpoint B not found at {CHECKPOINT_B}. Using random weights.")
         
@@ -106,7 +107,13 @@ def main():
             label = batch['label'].to(DEVICE)
             
             # --- Model A Inference ---
-            out_a = model_a(video, audio, sensor, images)
+            batch_input = {
+                'video': video,
+                'audio': audio,
+                'post_weld_images': images,
+                'sensor': sensor
+            }
+            out_a = model_a(batch_input)
             # Score A: L1 distance
             # Shape: (B, 128)
             z_result = out_a['Z_result']

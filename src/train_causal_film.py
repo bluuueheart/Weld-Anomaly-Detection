@@ -22,6 +22,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from sklearn.metrics import roc_auc_score
+import wandb
 
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -94,6 +95,16 @@ class CausalFiLMTrainer:
         # Logging
         self.train_log = []
         self.val_log = []
+
+        # Initialize WandB
+        if self.config.get("use_wandb", False):
+            wandb.init(
+                project=self.config.get("wandb_project", "weld-anomaly-detection"),
+                entity=self.config.get("wandb_entity"),
+                name=self.config.get("wandb_name"),
+                config=self.config,
+                reinit=True
+            )
     
     def _setup_model(self):
         """Setup Causal-FiLM model."""
@@ -271,6 +282,7 @@ class CausalFiLMTrainer:
             clip_model_name="ViT-B/32",
             text_prompt="a normal weld",
             device=self.device,
+            d_model=self.model.d_model,
         )
         
         print(f"  Loss: Causal-FiLM Loss")
@@ -362,6 +374,17 @@ class CausalFiLMTrainer:
                 print(f"    Batch [{batch_idx+1:3d}/{len(self.train_loader):3d}] "
                       f"Loss: {avg_total:.4f} (Cos: {avg_cos:.4f}, L1: {avg_l1:.4f}, C: {avg_clip:.4f}) "
                       f"LR: {lr:.2e}")
+                
+                if self.config.get("use_wandb", False):
+                    wandb.log({
+                        "train/batch_loss": avg_total,
+                        "train/batch_recon_cos": avg_cos,
+                        "train/batch_recon_l1": avg_l1,
+                        "train/batch_clip_text": avg_clip,
+                        "train/lr": lr,
+                        "epoch": epoch,
+                        "global_step": self.global_step
+                    })
         
         epoch_time = time.time() - epoch_start_time
         
@@ -473,6 +496,15 @@ class CausalFiLMTrainer:
                   f"LR: {train_stats['lr']:.2e} | "
                   f"Time: {train_stats['epoch_time']:.1f}s")
             
+            if self.config.get("use_wandb", False):
+                wandb.log({
+                    "train/epoch_loss": train_stats['loss'],
+                    "train/epoch_recon_cos": train_stats['recon_cos_loss'],
+                    "train/epoch_recon_l1": train_stats['recon_l1_loss'],
+                    "train/epoch_clip_text": train_stats['clip_text_loss'],
+                    "epoch": epoch
+                })
+            
             # Validate
             if epoch % self.config.get("val_interval", 1) == 0:
                 val_stats = self.validate(epoch)
@@ -485,6 +517,17 @@ class CausalFiLMTrainer:
                 print(f"  [SCORE] AUROC: {val_stats['auroc']:.4f} | "
                       f"Mean: {val_stats['mean_anomaly_score']:.4f} | "
                       f"Std: {val_stats['std_anomaly_score']:.4f}")
+                
+                if self.config.get("use_wandb", False):
+                    wandb.log({
+                        "val/loss": val_stats['loss'],
+                        "val/recon_cos": val_stats['recon_cos_loss'],
+                        "val/recon_l1": val_stats['recon_l1_loss'],
+                        "val/clip_text": val_stats['clip_text_loss'],
+                        "val/auroc": val_stats['auroc'],
+                        "val/mean_anomaly_score": val_stats['mean_anomaly_score'],
+                        "epoch": epoch
+                    })
                 
                 # Check for improvement (maximize AUROC)
                 current_metric = val_stats["auroc"]
@@ -530,6 +573,9 @@ class CausalFiLMTrainer:
         
         # Save final logs
         self._save_logs()
+
+        if self.config.get("use_wandb", False):
+            wandb.finish()
     
     def _save_checkpoint(self, epoch: int, is_best: bool = False):
         """Save model checkpoint."""
@@ -567,6 +613,13 @@ def main():
     parser = argparse.ArgumentParser(description="Train Causal-FiLM model")
     parser.add_argument("--dummy", action="store_true", help="Use dummy data and models")
     parser.add_argument("--config", type=str, default=None, help="Path to config file")
+    
+    # WandB arguments
+    parser.add_argument("--wandb", action="store_true", help="Enable WandB logging")
+    parser.add_argument("--wandb_project", type=str, default="weld-anomaly-detection", help="WandB project name")
+    parser.add_argument("--wandb_entity", type=str, default=None, help="WandB entity")
+    parser.add_argument("--wandb_name", type=str, default=None, help="WandB run name")
+    
     args = parser.parse_args()
     
     # Use config from train_config.py
@@ -590,6 +643,16 @@ def main():
             import json
             with open(cfg_path) as f:
                 config.update(json.load(f))
+    
+    # Update config with WandB args if provided
+    if args.wandb:
+        config["use_wandb"] = True
+    if args.wandb_project:
+        config["wandb_project"] = args.wandb_project
+    if args.wandb_entity:
+        config["wandb_entity"] = args.wandb_entity
+    if args.wandb_name:
+        config["wandb_name"] = args.wandb_name
     
     # Create trainer
     trainer = CausalFiLMTrainer(config, use_dummy=args.dummy)

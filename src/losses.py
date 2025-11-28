@@ -223,6 +223,7 @@ class CLIPTextLoss(nn.Module):
         clip_model_name: str = "ViT-B/32",
         text_prompt: str = "a normal weld",
         device: str = "cuda",
+        d_model: int = 128,
     ):
         super().__init__()
         
@@ -254,7 +255,7 @@ class CLIPTextLoss(nn.Module):
         # Projection head: d_model -> CLIP dimension
         # This is the only trainable component
         self.vision_projection = nn.Sequential(
-            nn.Linear(128, 256),
+            nn.Linear(d_model, 256),
             nn.LayerNorm(256),
             nn.GELU(),
             nn.Dropout(0.1),
@@ -315,6 +316,7 @@ class CausalFILMLoss(nn.Module):
         clip_model_name: str = "ViT-B/32",
         text_prompt: str = "a normal weld",
         device: str = "cuda",
+        d_model: int = 128,
     ):
         super().__init__()
         
@@ -328,6 +330,7 @@ class CausalFILMLoss(nn.Module):
             clip_model_name=clip_model_name,
             text_prompt=text_prompt,
             device=device,
+            d_model=d_model,
         )
     
     def forward(

@@ -6,9 +6,11 @@ import os
 import sys
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import wandb
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,6 +31,15 @@ def main():
     DEVICE = cfg["device"] if torch.cuda.is_available() else "cpu"
     SAVE_PATH = cfg["save_path"]
     
+    # Initialize WandB
+    if cfg.get("use_wandb", False):
+        wandb.init(
+            project=cfg.get("wandb_project", "weld-anomaly-detection"),
+            entity=cfg.get("wandb_entity", None),
+            name=cfg.get("wandb_run_name", "video-ae-training"),
+            config=cfg
+        )
+
     print(f"Training Video AE on {DEVICE}")
     
     # Create checkpoints directory
@@ -94,15 +105,31 @@ def main():
             num_batches += 1
             
             pbar.set_postfix({'loss': loss.item()})
+            
+            if cfg.get("use_wandb", False):
+                wandb.log({
+                    "train/loss": loss.item(),
+                    "epoch": epoch + 1,
+                    "batch": num_batches
+                })
         
         avg_loss = total_loss / num_batches if num_batches > 0 else 0
         print(f"Epoch {epoch+1} Average Loss: {avg_loss:.6f}")
+        
+        if cfg.get("use_wandb", False):
+            wandb.log({
+                "train/epoch_loss": avg_loss,
+                "epoch": epoch + 1
+            })
         
         # Save best model
         if avg_loss < best_loss:
             best_loss = avg_loss
             torch.save(model.state_dict(), SAVE_PATH)
             print(f"Saved best model to {SAVE_PATH}")
+
+    if cfg.get("use_wandb", False):
+        wandb.finish()
 
 if __name__ == "__main__":
     main()

@@ -30,6 +30,22 @@ This file consolidates recent updates and code-change notes. It is a curated, hu
 
 ## Timeline
 
+### 2025-11-28 — RobustResultEncoder Upgrade (Adaptive Gated Fusion)
+
+#### Goal
+Optimize "Plan E" architecture to reach SOTA (Target: 92% AUC) by addressing the bottleneck in static fusion.
+
+#### Changes
+- **Upgraded `RobustResultEncoder`**:
+  - Replaced static `Concat` fusion with **Adaptive Gated Fusion** (Channel-wise Attention).
+  - **Mechanism**:
+    - Input: Concatenated L12 (Structure) and L8 (Texture) features (1536 dim).
+    - Gate Network: `Linear(1536->384) -> ReLU -> Linear(384->1536) -> Sigmoid`.
+    - Fusion: Element-wise modulation of concatenated features by learned gates.
+  - **Projector Update**: Switched to `SiLU` activation and updated output dimension to 256.
+  - **Benefit**: Allows the model to dynamically weight Structure vs. Texture features, improving performance on geometric defects like "Convexity".
+  - **Fix**: Updated `CausalFILMLoss` initialization in `train_causal_film.py` to dynamically use `d_model` from the model config (256), resolving dimension mismatch error.
+
 ### 2025-11-11 — Evaluation Metrics Refactoring
 
 #### Problem Identified
@@ -132,6 +148,48 @@ Reach SOTA by combining Causal-FiLM (Plan E) with a dedicated Video Autoencoder 
   - Per user decision, `label_smoothing` parameter and related logic removed from configs and loss implementation
   - Keep MixUp + Early Stop
   - Updated docs and verification scripts
+
+### 2025-11-27 — WandB Integration
+
+#### Feature Added
+- **WandB Support**: Integrated Weights & Biases (wandb) for experiment tracking and visualization.
+- **Files Modified**:
+  - `src/train_causal_film.py`: Added wandb initialization, logging of training/validation metrics, and argument parsing.
+  - `scripts/train_causal_film.sh`: Updated to pass wandb arguments (`--wandb`, `--wandb_project`, `--wandb_name`).
+  - `configs/train_config.py`: Added default wandb configuration options.
+- **Usage**:
+  - Run `bash scripts/train_causal_film.sh` to start training with wandb logging enabled.
+  - Metrics logged: Loss (Total, Recon Cosine, Recon L1, CLIP Text), Learning Rate, AUROC, Anomaly Scores.
+
+### 2025-11-27 — Fix ModuleNotFoundError in Video AE Training
+
+#### Bug Fix
+- **Issue**: `ModuleNotFoundError: No module named 'configs.video_ae_config'` when running `scripts/train_video_ae.sh`.
+- **Fix**: 
+  - Updated `scripts/train_video_ae.sh` to explicitly export `PYTHONPATH`.
+  - Added `configs/__init__.py` to ensure `configs` is treated as a proper Python package.
+
+### 2025-11-27 — WandB Integration for Video AE
+
+#### Feature Added
+- **WandB Logging**: Integrated Weights & Biases (WandB) for Video Autoencoder training.
+- **Configuration**: Added `use_wandb`, `wandb_project`, `wandb_entity`, and `wandb_run_name` to `configs/video_ae_config.py`.
+- **Implementation**:
+  - Initialized WandB in `src/train_video_ae.py`.
+  - Logged training loss (batch and epoch level) to WandB.
+
+### 2025-11-27 — Fix PyTorch 2.6+ Checkpoint Loading
+
+#### Bug Fix
+- **Issue**: `_pickle.UnpicklingError` due to PyTorch 2.6+ defaulting `weights_only=True` in `torch.load`, which blocks numpy scalars.
+- **Fix**: Updated `torch.load` calls in `src/evaluate_fusion.py` to use `weights_only=False`.
+- **Improvement**: Updated `scripts/evaluate_fusion.sh` to explicitly export `PYTHONPATH`.
+
+### 2025-11-27 — Fix CausalFiLMModel Forward Call in Evaluation
+
+#### Bug Fix
+- **Issue**: `TypeError: CausalFiLMModel.forward() takes from 2 to 3 positional arguments but 5 were given` in `src/evaluate_fusion.py`.
+- **Fix**: Updated `src/evaluate_fusion.py` to pass inputs as a dictionary to `model_a`, matching the `CausalFiLMModel.forward` signature.
 
 ## Code-level highlights
 

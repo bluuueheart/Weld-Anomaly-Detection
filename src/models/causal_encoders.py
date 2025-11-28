@@ -174,35 +174,47 @@ class DummyResultEncoder(nn.Module):
 
 
 class RobustResultEncoder(nn.Module):
-    def __init__(self, output_dim=128):
+    def __init__(self, output_dim=256): # Note: Updated output_dim to 256 to match your config
         super().__init__()
-        # 1. 独立的 LayerNorm (防止特征淹没的关键)
+        
+        # 1. Independent Norms (Keep this from Plan E)
         self.norm_l12 = nn.LayerNorm(768)
         self.norm_l8 = nn.LayerNorm(768)
         
-        # 2. 单流投影 (1536 -> 128)
-        self.projector = nn.Sequential(
-            nn.Linear(768 * 2, 512),
-            nn.LayerNorm(512),
+        # 2. Adaptive Gating Network (The Upgrade)
+        # Input: 1536 (768*2) -> Output: 1536 weights
+        self.gate_net = nn.Sequential(
+            nn.Linear(1536, 384), # Bottleneck for efficiency
             nn.ReLU(),
+            nn.Linear(384, 1536),
+            nn.Sigmoid()
+        )
+        
+        # 3. Final Projector
+        self.projector = nn.Sequential(
+            nn.Linear(1536, 512),
+            nn.LayerNorm(512),
+            nn.SiLU(), # Swish/SiLU is better than ReLU for modern networks
             nn.Linear(512, output_dim)
         )
 
     def forward(self, dino_output):
-        # 3. 提取特征
-        # Layer 12 (结构): 使用 Mean Pooling
+        # Extract features (Same as Plan E)
         feat_l12 = dino_output['hidden_states'][11] 
         z_l12 = feat_l12.mean(dim=1) 
-        
-        # Layer 8 (纹理): 使用 Max Pooling (捕捉裂纹)
         feat_l8 = dino_output['hidden_states'][7]
         z_l8 = feat_l8.max(dim=1)[0] 
 
-        # 4. 独立归一化 (Plan E 的灵魂)
+        # Normalize
         z_l12 = self.norm_l12(z_l12)
         z_l8 = self.norm_l8(z_l8)
         
-        # 5. 拼接
+        # Concat
         combined = torch.cat([z_l12, z_l8], dim=-1) # (B, 1536)
         
-        return self.projector(combined)
+        # --- Adaptive Gating ---
+        gates = self.gate_net(combined) # (B, 1536)
+        gated_combined = combined * gates # Element-wise modulation
+        
+        # Project
+        return self.projector(gated_combined)

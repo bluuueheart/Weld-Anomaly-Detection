@@ -46,6 +46,12 @@ TRAIN_CONFIG = {
     "val_interval": 1,   # Validate every N epochs
     "save_interval": 5,  # Save checkpoint every N epochs
     
+    # WandB
+    "use_wandb": False,
+    "wandb_project": "weld-anomaly-detection",
+    "wandb_entity": None,
+    "wandb_name": None,
+
     # Checkpoint
     "resume": None,  # Path to checkpoint to resume from
     "save_best_only": True,
