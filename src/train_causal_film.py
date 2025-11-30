@@ -479,7 +479,8 @@ class CausalFiLMTrainer:
         
         start_time = time.time()
         
-        for epoch in range(1, self.config["num_epochs"] + 1):
+        start_epoch = self.current_epoch + 1
+        for epoch in range(start_epoch, self.config["num_epochs"] + 1):
             epoch_header = f"Epoch {epoch}/{self.config['num_epochs']}"
             print("=" * 70)
             print(epoch_header)
@@ -581,6 +582,7 @@ class CausalFiLMTrainer:
         """Save model checkpoint."""
         checkpoint = {
             "epoch": epoch,
+            "global_step": self.global_step,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
@@ -596,6 +598,43 @@ class CausalFiLMTrainer:
             path = self.checkpoint_dir / "latest_model.pth"
             torch.save(checkpoint, path)
     
+    def resume_checkpoint(self, checkpoint_path: str):
+        """Resume training from checkpoint."""
+        if checkpoint_path == "latest":
+            checkpoint_path = self.checkpoint_dir / "latest_model.pth"
+        elif checkpoint_path == "best":
+            checkpoint_path = self.checkpoint_dir / "best_model.pth"
+        
+        checkpoint_path = Path(checkpoint_path)
+        if not checkpoint_path.exists():
+            print(f"  ⚠️  Checkpoint not found: {checkpoint_path}")
+            return
+        
+        print(f"  Loading checkpoint from {checkpoint_path}...")
+        # Use weights_only=False to support numpy scalars if needed, though mostly standard types here
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        except TypeError:
+            # Fallback for older PyTorch versions that don't support weights_only arg
+            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if self.scheduler and "scheduler_state_dict" in checkpoint:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            
+        self.current_epoch = checkpoint["epoch"]
+        self.global_step = checkpoint.get("global_step", self.global_step)
+        self.best_metric = checkpoint.get("best_metric", -float('inf'))
+        
+        # Restore logs if available
+        if "train_log" in checkpoint:
+            self.train_log = checkpoint["train_log"]
+        if "val_log" in checkpoint:
+            self.val_log = checkpoint["val_log"]
+            
+        print(f"  ✅ Resumed from epoch {self.current_epoch} (Best metric: {self.best_metric:.4f})")
+
     def _save_logs(self):
         """Save training logs."""
         log_file = self.log_dir / "training_log.json"
@@ -619,6 +658,7 @@ def main():
     parser.add_argument("--wandb_project", type=str, default="weld-anomaly-detection", help="WandB project name")
     parser.add_argument("--wandb_entity", type=str, default=None, help="WandB entity")
     parser.add_argument("--wandb_name", type=str, default=None, help="WandB run name")
+    parser.add_argument("--resume", type=str, help="Path to checkpoint to resume from (or 'latest'/'best')")
     
     args = parser.parse_args()
     
@@ -656,6 +696,9 @@ def main():
     
     # Create trainer
     trainer = CausalFiLMTrainer(config, use_dummy=args.dummy)
+    
+    if args.resume:
+        trainer.resume_checkpoint(args.resume)
     
     # Train
     trainer.train()

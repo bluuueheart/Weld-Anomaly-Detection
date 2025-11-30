@@ -8,25 +8,51 @@ This module implements sensor-guided modulation of high-dimensional features
 import torch
 import torch.nn as nn
 from typing import Tuple
+from mamba_ssm import Mamba
+
+
+class MambaBlock(nn.Module):
+    """
+    Mamba block with residual connection and layer normalization.
+    """
+    def __init__(self, dim: int, d_state: int = 16, d_conv: int = 4, expand: int = 2):
+        super().__init__()
+        if Mamba is None:
+            raise ImportError("mamba_ssm is not installed. Please install it to use Mamba.")
+            
+        self.mamba = Mamba(
+            d_model=dim,
+            d_state=d_state,
+            d_conv=d_conv,
+            expand=expand,
+        )
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Residual connection: x + Mamba(Norm(x))
+        # Standard Mamba architecture often uses Pre-Norm
+        return x + self.mamba(self.norm(x))
 
 
 class SensorModulator(nn.Module):
     """
     Sensor-guided FiLM modulation module.
     
-    Extracts context from sensor time series using GRU and generates
+    Extracts context from sensor time series using Mamba (State Space Model) and generates
     gamma (scale) and beta (shift) parameters for feature modulation.
     
     Architecture:
         sensor_data (B, T_sensor, D_sensor) 
-        -> GRU (2 layers, hidden=64)
+        -> Linear (D_sensor -> hidden_dim)
+        -> Mamba Blocks (num_layers)
+        -> Last Token Pooling
         -> Linear(hidden_dim -> d_model * 2)
         -> split into gamma (B, 1, d_model) and beta (B, 1, d_model)
     
     Args:
         input_dim (int): Sensor input dimension (default: 6)
-        hidden_dim (int): GRU hidden dimension (default: 64)
-        num_layers (int): Number of GRU layers (default: 2)
+        hidden_dim (int): Mamba hidden dimension (default: 64)
+        num_layers (int): Number of Mamba layers (default: 2)
         d_model (int): Target feature dimension for modulation (default: 128)
     """
     
@@ -44,14 +70,21 @@ class SensorModulator(nn.Module):
         self.num_layers = num_layers
         self.d_model = d_model
         
-        # GRU for temporal context extraction
-        self.gru = nn.GRU(
-            input_size=input_dim,
-            hidden_size=hidden_dim,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=0.1 if num_layers > 1 else 0.0,
-        )
+        # Input projection
+        self.embedding = nn.Linear(input_dim, hidden_dim)
+        
+        # Mamba layers for temporal context extraction
+        self.layers = nn.Sequential(*[
+            MambaBlock(
+                dim=hidden_dim,
+                d_state=16,
+                d_conv=4,
+                expand=2
+            ) for _ in range(num_layers)
+        ])
+        
+        # Final normalization
+        self.norm = nn.LayerNorm(hidden_dim)
         
         # Linear layer to generate gamma and beta
         self.modulator_head = nn.Linear(hidden_dim, d_model * 2)
@@ -64,6 +97,10 @@ class SensorModulator(nn.Module):
         # Initialize modulator_head to output near-identity modulation
         nn.init.zeros_(self.modulator_head.weight)
         nn.init.zeros_(self.modulator_head.bias)
+        
+        # Initialize embedding
+        nn.init.xavier_uniform_(self.embedding.weight)
+        nn.init.zeros_(self.embedding.bias)
     
     def forward(self, sensor_data: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -76,12 +113,15 @@ class SensorModulator(nn.Module):
             gamma: Scale parameter (B, 1, d_model)
             beta: Shift parameter (B, 1, d_model)
         """
-        # Extract temporal context via GRU
-        # We only care about the last hidden state which summarizes the sequence
-        _, last_hidden_state = self.gru(sensor_data)  # (num_layers, B, hidden_dim)
+        # Project input to hidden dimension
+        x = self.embedding(sensor_data)  # (B, T, hidden_dim)
         
-        # Take the last layer's hidden state
-        context_vector = last_hidden_state[-1]  # (B, hidden_dim)
+        # Pass through Mamba layers
+        x = self.layers(x)  # (B, T, hidden_dim)
+        x = self.norm(x)
+        
+        # Take the last token's hidden state which summarizes the sequence (causal)
+        context_vector = x[:, -1, :]  # (B, hidden_dim)
         
         # Generate modulation parameters
         modulators = self.modulator_head(context_vector)  # (B, d_model * 2)

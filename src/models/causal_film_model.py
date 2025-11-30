@@ -81,6 +81,7 @@ class CausalFiLMModel(nn.Module):
         sensor_hidden_dim: int = 64,
         decoder_num_layers: int = 2,
         decoder_dropout: float = 0.2,
+        top_k_ratio: float = 0.5,
         use_dummy: bool = False,
     ):
         super().__init__()
@@ -90,6 +91,7 @@ class CausalFiLMModel(nn.Module):
         audio_config = audio_config or {}
         
         self.d_model = d_model
+        self.top_k_ratio = top_k_ratio
         self.use_dummy = use_dummy
         
         # ===== L0: Frozen Feature Extractors =====
@@ -231,7 +233,7 @@ class CausalFiLMModel(nn.Module):
         # Reshape and aggregate
         B = images.shape[0]
         N = images.shape[1]
-        Z_result = Z_result_flat.view(B, N, -1).mean(dim=1) # (B, 128)
+        Z_result = Z_result_flat.view(B, N, -1).max(dim=1)[0] # (B, 128)
         
         # ===== L3: Reconstruction via Decoder =====
         # During training, use noisy bottleneck; during inference, no noise
@@ -269,7 +271,19 @@ class CausalFiLMModel(nn.Module):
         """
         # Anomaly score = Cosine + 10 * L1
         dist_cos = 1.0 - F.cosine_similarity(Z_result, Z_result_pred, dim=1)
-        dist_l1 = torch.mean(torch.abs(Z_result - Z_result_pred), dim=1)
+        
+        # Top-K L1 Score (Hard Feature Mining)
+        # Calculate element-wise L1 error: (B, D)
+        l1_errors = torch.abs(Z_result - Z_result_pred)
+        
+        # Calculate K
+        feature_dim = l1_errors.shape[1]
+        k = int(feature_dim * self.top_k_ratio)
+        k = max(1, k)
+        
+        # Get top K errors per sample
+        top_k_errors, _ = torch.topk(l1_errors, k, dim=1)
+        dist_l1 = top_k_errors.mean(dim=1)
         
         anomaly_score = dist_cos + 10.0 * dist_l1
         return anomaly_score
@@ -321,6 +335,7 @@ def create_causal_film_model(config: Dict, use_dummy: bool = False) -> CausalFiL
         sensor_hidden_dim=causal_film_config.get("sensor_hidden_dim", 64),
         decoder_num_layers=causal_film_config.get("decoder_num_layers", 2),
         decoder_dropout=causal_film_config.get("decoder_dropout", 0.2),
+        top_k_ratio=causal_film_config.get("top_k_ratio", 0.5),
         use_dummy=use_dummy,
     )
     

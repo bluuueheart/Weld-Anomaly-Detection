@@ -23,7 +23,7 @@ class ProcessEncoder(nn.Module):
     This creates a causal dependency: audio modulates video representation.
     
     Args:
-        d_model (int): Feature dimension (default: 128)
+        d_model (int): Feature dimension (default: 256)
         num_heads (int): Number of attention heads (default: 4)
         num_layers (int): Number of cross-attention layers (default: 2)
         dropout (float): Dropout rate (default: 0.1)
@@ -31,7 +31,7 @@ class ProcessEncoder(nn.Module):
     
     def __init__(
         self,
-        d_model: int = 128,
+        d_model: int = 256,
         num_heads: int = 4,
         num_layers: int = 2,
         dropout: float = 0.1,
@@ -99,13 +99,13 @@ class ResultEncoder(nn.Module):
         - MLP (2-layer) -> (B, d_model)
     
     Args:
-        d_model (int): Output feature dimension (default: 128)
+        d_model (int): Output feature dimension (default: 256)
         dropout (float): Dropout rate (default: 0.1)
     """
     
     def __init__(
         self,
-        d_model: int = 128,
+        d_model: int = 256,
         dropout: float = 0.1,
     ):
         super().__init__()
@@ -144,7 +144,7 @@ class ResultEncoder(nn.Module):
 class DummyProcessEncoder(nn.Module):
     """Lightweight dummy process encoder for testing."""
     
-    def __init__(self, d_model: int = 128, **kwargs):
+    def __init__(self, d_model: int = 256, **kwargs):
         super().__init__()
         self.d_model = d_model
         self.pool = nn.AdaptiveAvgPool1d(1)
@@ -164,7 +164,7 @@ class DummyProcessEncoder(nn.Module):
 class DummyResultEncoder(nn.Module):
     """Lightweight dummy result encoder for testing."""
     
-    def __init__(self, d_model: int = 128, **kwargs):
+    def __init__(self, d_model: int = 256, **kwargs):
         super().__init__()
         self.d_model = d_model
     
@@ -185,7 +185,7 @@ class RobustResultEncoder(nn.Module):
         # Input: 1536 (768*2) -> Output: 1536 weights
         self.gate_net = nn.Sequential(
             nn.Linear(1536, 384), # Bottleneck for efficiency
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(384, 1536),
             nn.Sigmoid()
         )
@@ -196,6 +196,7 @@ class RobustResultEncoder(nn.Module):
             nn.LayerNorm(512),
             nn.SiLU(), # Swish/SiLU is better than ReLU for modern networks
             nn.Linear(512, output_dim)
+            # No LayerNorm or activation at the end to allow values to grow freely
         )
 
     def forward(self, dino_output):

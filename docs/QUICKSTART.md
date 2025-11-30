@@ -45,6 +45,12 @@ pip install -r requirements.txt
 
 # 安装CLIP (用于Causal-FiLM)
 pip install git+https://github.com/openai/CLIP.git
+
+# 安装 Mamba (用于 SensorModulator)
+# 注意：Mamba 需要 CUDA 环境
+pip install causal-conv1d>=1.2.0
+pip install mamba-ssm
+
 ```
 
 ### 1.3 数据准备

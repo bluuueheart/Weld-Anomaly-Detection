@@ -16,14 +16,14 @@ TRAIN_CONFIG = {
     "min_lr": 1e-7,  # Lower floor to allow aggressive decay
     
     # Loss
-    "loss_type": "supcon",  # "supcon", "combined", "causal_film"
+    "loss_type": "causal_film",  # "supcon", "combined", "causal_film"
     "temperature": 0.10,  # Increased from 0.07 (smoother similarity, less overfitting)
     "use_ce": False,
     "ce_weight": 0.0,
     "supcon_weight": 1.0,
     
     # Causal-FiLM specific loss parameters
-    "lambda_text": 0.1,  # Weight for CLIP text constraint loss
+    "lambda_text": 0.01,  # Reduced from 0.1 to release decoder capacity
     
     # Regularization via data augmentation
     "use_mixup": False,  # Feature-level mixup

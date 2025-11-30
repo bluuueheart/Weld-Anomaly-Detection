@@ -33,41 +33,56 @@
 - **Sensor**: 原始 6 通道时间序列数据。
 
 #### 2. L1: FiLM 传感器调制 (Sensor Modulation)
-- **SensorModulator**: 
-  - 输入: 6 通道传感器数据
-  - 结构: GRU/LSTM -> MLP -> 输出 `gamma`, `beta` (1, 256)
-  - 作用: 生成全局上下文仿射变换参数
-- **调制操作**: $F_{mod} = F \cdot \gamma + \beta$
-  - 应用于视频和音频特征，注入工艺参数上下文。
+- **SensorModulator (Mamba-based)**: 
+  - **核心**: 采用 **Mamba (State Space Model)** 替代传统的 GRU/LSTM，以更高效地捕捉长序列依赖。
+  - **输入**: 6 通道传感器数据 (B, T, 6)。
+  - **结构**: 
+    - Embedding: Linear (6 -> 128)
+    - Encoder: 堆叠 `MambaBlock` (d_state=16, d_conv=4, expand=2)
+    - Pooling: 提取最后一个 Token (Causal Context)
+    - Output: Linear -> `gamma`, `beta` (B, 1, 256)
+  - **初始化**: Gamma 初始化为 1 (Identity)，Beta 初始化为 0，确保训练初期不破坏特征。
+  - **调制操作**: $F_{mod} = F \cdot \gamma + \beta$
 
 #### 3. L2: 因果分层编码器 (Causal Encoders)
 - **ProcessEncoder (过程编码)**:
-  - 输入: 调制后的视频 (Query) 和音频 (Key/Value)
-  - 结构: 2层 Cross-Attention Transformer, 4 Heads
-  - 输出: `Z_process` (256 dim)
-  - 逻辑: 视频关注音频，捕捉焊接过程中的声光交互。
+  - **机制**: Cross-Attention Transformer
+  - **输入**: 调制后的视频 (Query) 和音频 (Key/Value)
+  - **结构**: `nn.TransformerDecoder` (2 layers, 4 heads)
+  - **逻辑**: 视频主动查询音频特征，捕捉焊接过程中的声光同步模式。
 - **RobustResultEncoder (结果编码)**:
-  - 输入: DINOv2 的 Layer 12 (结构语义) 和 Layer 8 (纹理细节)
-  - 结构: 
+  - **输入**: DINOv2 的 Layer 12 (结构语义, Mean Pool) 和 Layer 8 (纹理细节, Max Pool)。
+  - **融合**: **Adaptive Gated Fusion (自适应门控融合)**
     - 独立 LayerNorm: 分别归一化 L12 和 L8 特征
-    - 拼接: Concat(L12, L8) -> 1536 dim
-    - 投影: MLP (1536 -> 512 -> ReLU -> 256)
-  - 输出: `Z_result` (256 dim)
-  - 逻辑: 融合高层语义与底层纹理，增强对微小裂纹的敏感度。
+    - 拼接: Concat -> 1536 dim
+    - Gate Network: Linear(1536->384) -> ReLU -> Linear(384->1536) -> Sigmoid
+    - 融合: Element-wise product (特征 * 门控)
+  - **投影**: Linear -> LayerNorm -> **SiLU** -> Linear -> 256 dim
+  - **逻辑**: 动态加权结构与纹理特征，增强对微小裂纹（纹理异常）和焊缝成型（结构异常）的捕捉能力。
 
 #### 4. L3: 反泛化解码器 (Anti-Generalization Decoder)
 - **AntiGenDecoder**:
-  - 输入: `Z_process`
-  - 结构: 单流 MLP (256 -> 256)
-  - 输出: `Z_result_pred`
-  - 逻辑: 仅通过过程特征预测结果特征。由于仅在正常样本上训练，模型无法预测异常过程产生的结果，从而产生高重建误差。
+  - **输入**: `Z_process` (256 dim)
+  - **结构**: MLP (256 -> 256 -> LayerNorm -> ReLU -> 256)
+  - **逻辑**: 仅通过过程特征预测结果特征。由于仅在正常样本上训练，模型无法预测异常过程产生的结果，从而产生高重建误差。
 
 #### 5. L4: 复合损失函数 (Loss Function)
 - **CausalFILMLoss**:
   - **Cosine Distance**: $1 - \text{cosine\_similarity}(Z_{result}, Z_{pred})$ (关注方向一致性)
-  - **L1 Distance**: $\text{mean}(|Z_{result} - Z_{pred}|)$ (关注强度差异，权重 10.0)
-  - **CLIP Text Constraint**: 强制 $Z_{pred}$ 与 "a normal weld" 的 CLIP 嵌入对齐 (权重 0.1)
+  - **L1 Loss**: $\text{mean}(|Z_{result} - Z_{pred}|)$ (关注强度差异，权重 10.0)
+  - **CLIP Text Constraint**: 强制 $Z_{pred}$ 与 "a normal weld" 的 CLIP 嵌入对齐 (权重 0.1)，防止解码器退化。
   - **总损失**: $L_{total} = L_{cos} + 10.0 \cdot L_{L1} + 0.1 \cdot L_{text}$
+
+#### 6. 异常评分计算 (Anomaly Score)
+- **公式**: $\text{Score} = \text{Dist}_{cos} + 10.0 \cdot \text{Dist}_{L1\_TopK}$
+- **Top-K L1**: 计算元素级 L1 误差，取前 50% (Top-K) 的均值。
+- **目的**: **Hard Feature Mining**。仅关注重建误差最大的特征维度，忽略噪声，提高对微小缺陷的敏感度。
+
+#### 7. 训练稳定性 (Model EMA)
+- **ModelEMA**: 引入指数移动平均 (Exponential Moving Average)。
+- **Decay**: 0.999
+- **机制**: 训练时维护一套 Shadow Weights，验证/推理时使用 Shadow Weights。
+- **作用**: 平滑 L1 Loss 带来的梯度震荡，显著提升模型的泛化能力和最终 AUROC 指标。
 
 ### 训练配置 (Training Config)
 

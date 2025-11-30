@@ -100,7 +100,7 @@ class AntiGenBlock(nn.Module):
         dropout (float): Dropout rate
     """
     
-    def __init__(self, d_model: int = 128, nhead: int = 4, dropout: float = 0.1):
+    def __init__(self, d_model: int = 256, nhead: int = 4, dropout: float = 0.1):
         super().__init__()
         
         # Linear attention (unfocused)
@@ -158,7 +158,7 @@ class CausalDecoder(nn.Module):
         -> Z_result_pred
     
     Args:
-        d_model (int): Feature dimension (default: 128)
+        d_model (int): Feature dimension (default: 256)
         num_layers (int): Number of decoder layers (default: 2)
         nhead (int): Number of attention heads (default: 4)
         dropout_p (float): Dropout probability for noisy bottleneck (default: 0.2)
@@ -166,7 +166,7 @@ class CausalDecoder(nn.Module):
     
     def __init__(
         self,
-        d_model: int = 128,
+        d_model: int = 256,
         num_layers: int = 2,
         nhead: int = 4,
         dropout_p: float = 0.2,
@@ -235,7 +235,7 @@ class DummyCausalDecoder(nn.Module):
     
     def __init__(
         self,
-        d_model: int = 128,
+        d_model: int = 256,
         dropout_p: float = 0.2,
         **kwargs,
     ):
@@ -263,15 +263,16 @@ class DummyCausalDecoder(nn.Module):
 class AntiGenDecoder(nn.Module):
     """
     Simple, single-stream AntiGenDecoder.
-    Process -> 128. No dual heads.
+    Process -> 256. No dual heads.
     """
-    def __init__(self, d_model: int = 128):
+    def __init__(self, d_model: int = 256):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.LayerNorm(d_model),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(d_model, d_model)
+            # No LayerNorm or activation at the end to allow values to grow freely
         )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:

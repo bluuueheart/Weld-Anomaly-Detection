@@ -26,6 +26,7 @@ from src.models import create_quadmodal_model
 from src.dataset import WeldingDataset
 from src.losses import SupConLoss, CombinedLoss
 from src.samplers import StratifiedBatchSampler
+from src.train_causal_film import CausalFiLMTrainer
 from configs.dataset_config import (
     DATA_ROOT, MANIFEST_PATH, VIDEO_LENGTH, AUDIO_SAMPLE_RATE, AUDIO_DURATION,
     SENSOR_LENGTH, IMAGE_SIZE, IMAGE_NUM_ANGLES
@@ -915,9 +916,17 @@ def main():
         config['mixed_precision'] = True
 
     # Create trainer
-    trainer = Trainer(config, use_dummy=use_dummy)
+    if config.get("loss_type") == "causal_film":
+        print("=" * 70)
+        print("SWITCHING TO CAUSAL-FILM TRAINER")
+        print("=" * 70)
+        trainer = CausalFiLMTrainer(config, use_dummy=use_dummy)
+    else:
+        trainer = Trainer(config, use_dummy=use_dummy)
+        
     # Optional lightweight debug info printed for first batch
-    trainer.debug = bool(getattr(args, 'debug', False))
+    if hasattr(trainer, 'debug'):
+        trainer.debug = bool(getattr(args, 'debug', False))
 
     # Train
     trainer.train()

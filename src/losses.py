@@ -223,7 +223,7 @@ class CLIPTextLoss(nn.Module):
         clip_model_name: str = "ViT-B/32",
         text_prompt: str = "a normal weld",
         device: str = "cuda",
-        d_model: int = 128,
+        d_model: int = 256,
     ):
         super().__init__()
         
@@ -316,7 +316,7 @@ class CausalFILMLoss(nn.Module):
         clip_model_name: str = "ViT-B/32",
         text_prompt: str = "a normal weld",
         device: str = "cuda",
-        d_model: int = 128,
+        d_model: int = 256,
     ):
         super().__init__()
         
@@ -357,7 +357,9 @@ class CausalFILMLoss(nn.Module):
         
         # 2. L1 Loss (Mean Absolute Error)
         # We want the model to match the INTENSITY of the features
-        loss_l1 = F.l1_loss(Z_result, Z_result_pred)
+        # Using F.smooth_l1_loss (Huber Loss) for training stability
+        # It behaves like L2 when error is small, and L1 when error is large
+        loss_l1 = F.smooth_l1_loss(Z_result, Z_result_pred, beta=0.1)
         
         # CLIP text loss
         loss_clip_text = self.clip_text_loss(Z_result_pred)

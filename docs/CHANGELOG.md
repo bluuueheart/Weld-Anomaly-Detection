@@ -30,6 +30,70 @@ This file consolidates recent updates and code-change notes. It is a curated, hu
 
 ## Timeline
 
+### 2025-11-30 — Loss & Hyperparameter Optimization
+
+#### Goal
+Further optimize the Causal-FiLM model for better training stability and decoder capacity, aiming for higher AUROC.
+
+#### Changes
+- **Loss Function**:
+  - **Training**: Switched from `L1 Loss` to `Smooth L1 Loss` (Huber Loss) in `src/losses.py`. This provides more stable gradients when errors are small, preventing oscillation near the optimum.
+  - **Inference**: Anomaly score calculation remains `L1 Loss` (Absolute Distance) + Cosine Distance, as this "hard" metric is better for detecting anomalies.
+- **Hyperparameters**:
+  - **CLIP Constraint**: Reduced `lambda_text` from `0.1` to `0.01` in `configs/train_config.py`. This weakens the semantic constraint, allowing the decoder more freedom to learn subtle feature reconstructions without being overly pulled towards the generic "normal weld" text embedding.
+
+### 2025-11-29 — Dimension Upgrade (Z_result -> 256)
+
+#### Goal
+Increase the capacity of the Causal-FiLM model by upgrading the unified feature dimension (`d_model`) from 128 to 256.
+
+#### Changes
+- **Configuration**: Verified `configs/model_config.py` sets `d_model: 256`.
+- **Codebase Defaults**: Updated default `d_model` values from 128 to 256 in:
+  - `src/models/causal_film_model.py` (Model & Factory)
+  - `src/models/causal_encoders.py` (ProcessEncoder, ResultEncoder, Dummy encoders)
+  - `src/models/film_modulation.py` (SensorModulator, DummySensorModulator)
+  - `src/models/causal_decoder.py` (CausalDecoder, AntiGenDecoder, DummyCausalDecoder)
+  - `src/losses.py` (CausalFILMLoss, CLIPTextLoss)
+
+#### Benefit
+- **Higher Capacity**: Allows the model to capture more detailed features from the multimodal inputs.
+- **Consistency**: Ensures that all components (encoders, decoders, loss functions) default to the same dimension, reducing the risk of dimension mismatch errors if config is missing.
+
+### 2025-11-29 — Unified Training Entry Point
+
+#### Goal
+Align the training logic with the configuration `loss_type: "causal_film"`. Ensure that running `src/train.py` respects this configuration and launches the appropriate trainer.
+
+#### Changes
+- **Configuration**: Updated `configs/train_config.py` to set default `"loss_type": "causal_film"`.
+- **Unified Entry Point**: Modified `src/train.py` to:
+  - Import `CausalFiLMTrainer` from `src/train_causal_film.py`.
+  - Check `config["loss_type"]` in `main()`.
+  - Automatically switch to `CausalFiLMTrainer` if `loss_type` is `"causal_film"`.
+  - Fallback to standard `Trainer` for `"supcon"` or `"combined"`.
+
+#### Benefit
+- Simplifies usage: Users can now use `src/train.py` as the single entry point for all training modes.
+- Consistency: The `loss_type` config now directly controls the training behavior across the board.
+
+### 2025-11-28 — SensorModulator Upgrade (Mamba)
+
+#### Goal
+Enhance the temporal modeling capability of the sensor modality by replacing the GRU-based modulator with a Mamba (State Space Model) based architecture.
+
+#### Changes
+- **Upgraded `SensorModulator`**:
+  - Replaced `nn.GRU` with `Mamba` (State Space Model) blocks.
+  - **Architecture**:
+    - Input: Sensor data (B, T, 6).
+    - Embedding: Linear projection to hidden dimension.
+    - Encoder: Stacked `MambaBlock` layers (Mamba + Residual + LayerNorm).
+    - Pooling: Last token extraction (causal context).
+    - Output: Linear projection to FiLM parameters (gamma, beta).
+  - **Configuration**: Added `configs/mamba_config.py` with default Mamba settings (`d_state=16`, `d_conv=4`, `expand=2`).
+  - **Dependency**: Added `mamba-ssm` and `causal-conv1d` to requirements.
+
 ### 2025-11-28 — RobustResultEncoder Upgrade (Adaptive Gated Fusion)
 
 #### Goal
