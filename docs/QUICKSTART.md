@@ -1082,13 +1082,13 @@ tensorboard --port 6007 --logdir /root/autodl-tmp/outputs/logs
 ```json
 {
   "train": [
-    {"loss": 2.3456, "time": 45.3, "lr": 0.0001},
-    {"loss": 1.8765, "time": 44.8, "lr": 0.000095},
+    {"train/loss": 2.3456, "train/time": 45.3, "train/lr": 0.0001},
+    {"train/loss": 1.8765, "train/time": 44.8, "train/lr": 0.000095},
     ...
   ],
   "val": [
-    {"loss": 2.0543},
-    {"loss": 1.9234},
+    {"val/loss": 2.0543},
+    {"val/loss": 1.9234},
     ...
   ],
   "config": {

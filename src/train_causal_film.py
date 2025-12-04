@@ -95,16 +95,32 @@ class CausalFiLMTrainer:
         # Logging
         self.train_log = []
         self.val_log = []
+        self.wandb_id = None
 
-        # Initialize WandB
-        if self.config.get("use_wandb", False):
-            wandb.init(
-                project=self.config.get("wandb_project", "weld-anomaly-detection"),
-                entity=self.config.get("wandb_entity"),
-                name=self.config.get("wandb_name"),
-                config=self.config,
-                reinit=True
-            )
+    def _setup_wandb(self):
+        """Initialize WandB, optionally resuming from a run ID."""
+        if not self.config.get("use_wandb", False):
+            return
+
+        init_kwargs = {
+            "project": self.config.get("wandb_project", "weld-anomaly-detection"),
+            "entity": self.config.get("wandb_entity"),
+            "name": self.config.get("wandb_name"),
+            "config": self.config,
+            "reinit": True
+        }
+
+        # Priority: 1. CLI arg (in config), 2. Checkpoint
+        run_id = self.config.get("wandb_id")
+        if not run_id and self.wandb_id:
+            run_id = self.wandb_id
+
+        if run_id:
+            print(f"  Resuming WandB run: {run_id}")
+            init_kwargs["id"] = run_id
+            init_kwargs["resume"] = "allow"
+
+        wandb.init(**init_kwargs)
     
     def _setup_model(self):
         """Setup Causal-FiLM model."""
@@ -112,11 +128,16 @@ class CausalFiLMTrainer:
         print("INITIALIZING CAUSAL-FILM MODEL")
         print("=" * 70)
         
+        # Inject feature_noise from train config into model config
+        causal_film_config = CAUSAL_FILM_CONFIG.copy()
+        causal_film_config["feature_noise"] = self.config.get("feature_noise", 0.0)
+        causal_film_config["feature_mask_ratio"] = self.config.get("feature_mask_ratio", 0.0)
+        
         model_config = {
             "VIDEO_ENCODER": VIDEO_ENCODER,
             "IMAGE_ENCODER": IMAGE_ENCODER,
             "AUDIO_ENCODER": AUDIO_ENCODER,
-            "CAUSAL_FILM": CAUSAL_FILM_CONFIG,
+            "CAUSAL_FILM": causal_film_config,
         }
         
         self.model = create_causal_film_model(model_config, use_dummy=self.use_dummy)
@@ -276,9 +297,13 @@ class CausalFiLMTrainer:
         print("=" * 70)
         
         lambda_text = self.config.get("lambda_text", 0.1)
+        lambda_l1 = self.config.get("lambda_l1", 10.0)
+        top_k_ratio = self.config.get("top_k_ratio", 1.0)
         
         self.criterion = CausalFILMLoss(
             lambda_text=lambda_text,
+            lambda_l1=lambda_l1,
+            top_k_ratio=top_k_ratio,
             clip_model_name="ViT-B/32",
             text_prompt="a normal weld",
             device=self.device,
@@ -287,6 +312,8 @@ class CausalFiLMTrainer:
         
         print(f"  Loss: Causal-FiLM Loss")
         print(f"  Lambda (text): {lambda_text}")
+        print(f"  Lambda (L1): {lambda_l1}")
+        print(f"  Top-K Ratio: {top_k_ratio}")
         print()
     
     def _move_batch_to_device(self, batch: dict):
@@ -311,6 +338,7 @@ class CausalFiLMTrainer:
         """Train for one epoch."""
         self.model.train()
         epoch_losses = {"total": [], "recon_cos": [], "recon_l1": [], "clip_text": []}
+        epoch_scores = []
         
         epoch_start_time = time.time()
         
@@ -333,6 +361,14 @@ class CausalFiLMTrainer:
                     Z_result_pred=output.get("Z_result_pred"),
                 )
                 loss = loss_dict["total"]
+            
+            # Compute anomaly scores for monitoring (on normal samples)
+            with torch.no_grad():
+                scores = self.model.compute_anomaly_score(
+                    Z_result=output.get("Z_result"),
+                    Z_result_pred=output.get("Z_result_pred"),
+                )
+                epoch_scores.append(scores.detach().cpu())
             
             # Backward pass
             self.optimizer.zero_grad()
@@ -389,14 +425,17 @@ class CausalFiLMTrainer:
         epoch_time = time.time() - epoch_start_time
         
         # Compute epoch statistics
+        epoch_scores_cat = torch.cat(epoch_scores)
         epoch_stats = {
             "epoch": epoch,
-            "loss": np.mean(epoch_losses["total"]),
-            "recon_cos_loss": np.mean(epoch_losses["recon_cos"]),
-            "recon_l1_loss": np.mean(epoch_losses["recon_l1"]),
-            "clip_text_loss": np.mean(epoch_losses["clip_text"]),
-            "lr": self.optimizer.param_groups[0]["lr"],
-            "epoch_time": epoch_time,
+            "train/loss": np.mean(epoch_losses["total"]),
+            "train/recon_cos_loss": np.mean(epoch_losses["recon_cos"]),
+            "train/recon_l1_loss": np.mean(epoch_losses["recon_l1"]),
+            "train/clip_text_loss": np.mean(epoch_losses["clip_text"]),
+            "train/mean_anomaly_score": epoch_scores_cat.mean().item(),
+            "train/std_anomaly_score": epoch_scores_cat.std().item(),
+            "train/lr": self.optimizer.param_groups[0]["lr"],
+            "train/epoch_time": epoch_time,
         }
         
         return epoch_stats
@@ -452,21 +491,24 @@ class CausalFiLMTrainer:
 
         val_stats = {
             "epoch": epoch,
-            "loss": np.mean(val_losses["total"]),
-            "recon_cos_loss": np.mean(val_losses["recon_cos"]),
-            "recon_l1_loss": np.mean(val_losses["recon_l1"]),
-            "clip_text_loss": np.mean(val_losses["clip_text"]),
-            "auroc": auroc,
-            "mean_anomaly_score": anomaly_scores_cat.mean().item(),
-            "std_anomaly_score": anomaly_scores_cat.std().item(),
-            "min_anomaly_score": anomaly_scores_cat.min().item(),
-            "max_anomaly_score": anomaly_scores_cat.max().item(),
+            "val/loss": np.mean(val_losses["total"]),
+            "val/recon_cos_loss": np.mean(val_losses["recon_cos"]),
+            "val/recon_l1_loss": np.mean(val_losses["recon_l1"]),
+            "val/clip_text_loss": np.mean(val_losses["clip_text"]),
+            "val/auroc": auroc,
+            "val/mean_anomaly_score": anomaly_scores_cat.mean().item(),
+            "val/std_anomaly_score": anomaly_scores_cat.std().item(),
+            "val/min_anomaly_score": anomaly_scores_cat.min().item(),
+            "val/max_anomaly_score": anomaly_scores_cat.max().item(),
         }
         
         return val_stats
     
     def train(self):
         """Main training loop."""
+        # Initialize WandB here (after potential resume_checkpoint)
+        self._setup_wandb()
+
         print("=" * 70)
         print("STARTING TRAINING")
         print("=" * 70)
@@ -490,19 +532,22 @@ class CausalFiLMTrainer:
             train_stats = self.train_epoch(epoch)
             self.train_log.append(train_stats)
             
-            print(f"\n  [TRAIN] Loss: {train_stats['loss']:.4f} | "
-                  f"Cos: {train_stats['recon_cos_loss']:.4f} | "
-                  f"L1: {train_stats['recon_l1_loss']:.4f} | "
-                  f"CLIP: {train_stats['clip_text_loss']:.4f} | "
-                  f"LR: {train_stats['lr']:.2e} | "
-                  f"Time: {train_stats['epoch_time']:.1f}s")
+            print(f"\n  [TRAIN] Loss: {train_stats['train/loss']:.4f} | "
+                  f"Cos: {train_stats['train/recon_cos_loss']:.4f} | "
+                  f"L1: {train_stats['train/recon_l1_loss']:.4f} | "
+                  f"CLIP: {train_stats['train/clip_text_loss']:.4f} | "
+                  f"LR: {train_stats['train/lr']:.2e} | "
+                  f"Time: {train_stats['train/epoch_time']:.1f}s")
+            print(f"  [TRAIN] Mean: {train_stats['train/mean_anomaly_score']:.4f} | "
+                  f"Std: {train_stats['train/std_anomaly_score']:.4f}")
             
             if self.config.get("use_wandb", False):
                 wandb.log({
-                    "train/epoch_loss": train_stats['loss'],
-                    "train/epoch_recon_cos": train_stats['recon_cos_loss'],
-                    "train/epoch_recon_l1": train_stats['recon_l1_loss'],
-                    "train/epoch_clip_text": train_stats['clip_text_loss'],
+                    "train/epoch_loss": train_stats['train/loss'],
+                    "train/epoch_recon_cos": train_stats['train/recon_cos_loss'],
+                    "train/epoch_recon_l1": train_stats['train/recon_l1_loss'],
+                    "train/epoch_clip_text": train_stats['train/clip_text_loss'],
+                    "train/mean_anomaly_score": train_stats['train/mean_anomaly_score'],
                     "epoch": epoch
                 })
             
@@ -511,27 +556,27 @@ class CausalFiLMTrainer:
                 val_stats = self.validate(epoch)
                 self.val_log.append(val_stats)
                 
-                print(f"  [VAL]   Loss: {val_stats['loss']:.4f} | "
-                      f"Cos: {val_stats['recon_cos_loss']:.4f} | "
-                      f"L1: {val_stats['recon_l1_loss']:.4f} | "
-                      f"CLIP: {val_stats['clip_text_loss']:.4f}")
-                print(f"  [SCORE] AUROC: {val_stats['auroc']:.4f} | "
-                      f"Mean: {val_stats['mean_anomaly_score']:.4f} | "
-                      f"Std: {val_stats['std_anomaly_score']:.4f}")
+                print(f"  [VAL]   Loss: {val_stats['val/loss']:.4f} | "
+                      f"Cos: {val_stats['val/recon_cos_loss']:.4f} | "
+                      f"L1: {val_stats['val/recon_l1_loss']:.4f} | "
+                      f"CLIP: {val_stats['val/clip_text_loss']:.4f}")
+                print(f"  [VAL]   AUROC: {val_stats['val/auroc']:.4f} | "
+                      f"Mean: {val_stats['val/mean_anomaly_score']:.4f} | "
+                      f"Std: {val_stats['val/std_anomaly_score']:.4f}")
                 
                 if self.config.get("use_wandb", False):
                     wandb.log({
-                        "val/loss": val_stats['loss'],
-                        "val/recon_cos": val_stats['recon_cos_loss'],
-                        "val/recon_l1": val_stats['recon_l1_loss'],
-                        "val/clip_text": val_stats['clip_text_loss'],
-                        "val/auroc": val_stats['auroc'],
-                        "val/mean_anomaly_score": val_stats['mean_anomaly_score'],
+                        "val/loss": val_stats['val/loss'],
+                        "val/recon_cos": val_stats['val/recon_cos_loss'],
+                        "val/recon_l1": val_stats['val/recon_l1_loss'],
+                        "val/clip_text": val_stats['val/clip_text_loss'],
+                        "val/auroc": val_stats['val/auroc'],
+                        "val/mean_anomaly_score": val_stats['val/mean_anomaly_score'],
                         "epoch": epoch
                     })
                 
                 # Check for improvement (maximize AUROC)
-                current_metric = val_stats["auroc"]
+                current_metric = val_stats["val/auroc"]
                 if current_metric > self.best_metric:
                     improvement = current_metric - self.best_metric
                     self.best_metric = current_metric
@@ -589,6 +634,7 @@ class CausalFiLMTrainer:
             "best_metric": self.best_metric,
             "train_log": self.train_log,
             "val_log": self.val_log,
+            "wandb_id": wandb.run.id if wandb.run else None,
         }
         
         if is_best:
@@ -632,6 +678,8 @@ class CausalFiLMTrainer:
             self.train_log = checkpoint["train_log"]
         if "val_log" in checkpoint:
             self.val_log = checkpoint["val_log"]
+        
+        self.wandb_id = checkpoint.get("wandb_id")
             
         print(f"  ✅ Resumed from epoch {self.current_epoch} (Best metric: {self.best_metric:.4f})")
 
@@ -658,6 +706,7 @@ def main():
     parser.add_argument("--wandb_project", type=str, default="weld-anomaly-detection", help="WandB project name")
     parser.add_argument("--wandb_entity", type=str, default=None, help="WandB entity")
     parser.add_argument("--wandb_name", type=str, default=None, help="WandB run name")
+    parser.add_argument("--wandb_id", type=str, default=None, help="WandB run ID to resume")
     parser.add_argument("--resume", type=str, help="Path to checkpoint to resume from (or 'latest'/'best')")
     
     args = parser.parse_args()
@@ -693,6 +742,8 @@ def main():
         config["wandb_entity"] = args.wandb_entity
     if args.wandb_name:
         config["wandb_name"] = args.wandb_name
+    if args.wandb_id:
+        config["wandb_id"] = args.wandb_id
     
     # Create trainer
     trainer = CausalFiLMTrainer(config, use_dummy=args.dummy)

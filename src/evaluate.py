@@ -186,10 +186,10 @@ class Evaluator:
         recall = recall_score(test_labels, predictions, average="weighted", zero_division=0)
         f1 = f1_score(test_labels, predictions, average="weighted", zero_division=0)
         
-        print(f"  Accuracy:  {accuracy:.4f}")
-        print(f"  Precision: {precision:.4f}")
-        print(f"  Recall:    {recall:.4f}")
-        print(f"  F1-Score:  {f1:.4f}")
+        print(f"  [TEST] Accuracy:  {accuracy:.4f}")
+        print(f"  [TEST] Precision: {precision:.4f}")
+        print(f"  [TEST] Recall:    {recall:.4f}")
+        print(f"  [TEST] F1-Score:  {f1:.4f}")
         print()
         
         # Classification report
@@ -208,11 +208,11 @@ class Evaluator:
         
         # Prepare results
         results = {
-            "accuracy": float(accuracy),
-            "precision": float(precision),
-            "recall": float(recall),
-            "f1_score": float(f1),
-            "confusion_matrix": cm.tolist(),
+            "test/accuracy": float(accuracy),
+            "test/precision": float(precision),
+            "test/recall": float(recall),
+            "test/f1_score": float(f1),
+            "test/confusion_matrix": cm.tolist(),
             "k": self.k,
             "metric": self.metric,
             "train_samples": len(train_labels),

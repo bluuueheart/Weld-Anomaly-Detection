@@ -305,6 +305,8 @@ class CausalFILMLoss(nn.Module):
     
     Args:
         lambda_text: Weight for CLIP text loss (default: 0.1)
+        lambda_l1: Weight for L1 reconstruction loss (default: 10.0)
+        top_k_ratio: Ratio of top-k features for Hard Feature Mining (default: 1.0)
         clip_model_name: CLIP model name (default: "ViT-B/32")
         text_prompt: Text prompt for normal class (default: "a normal weld")
         device: Device for CLIP model
@@ -313,14 +315,18 @@ class CausalFILMLoss(nn.Module):
     def __init__(
         self,
         lambda_text: float = 0.1,
+        lambda_l1: float = 10.0,
+        top_k_ratio: float = 1.0,
         clip_model_name: str = "ViT-B/32",
         text_prompt: str = "a normal weld",
         device: str = "cuda",
-        d_model: int = 256,
+        d_model: int = 512,
     ):
         super().__init__()
         
         self.lambda_text = lambda_text
+        self.lambda_l1 = lambda_l1
+        self.top_k_ratio = top_k_ratio
         
         # Reconstruction loss
         self.recon_loss = ReconstructionLoss()
@@ -355,18 +361,26 @@ class CausalFILMLoss(nn.Module):
         # 1. Cosine Loss (Direction)
         loss_cos = 1.0 - F.cosine_similarity(Z_result, Z_result_pred, dim=-1).mean()
         
-        # 2. L1 Loss (Mean Absolute Error)
+        # 2. L1 Loss (Mean Absolute Error) with Hard Feature Mining
         # We want the model to match the INTENSITY of the features
-        # Using F.smooth_l1_loss (Huber Loss) for training stability
-        # It behaves like L2 when error is small, and L1 when error is large
-        loss_l1 = F.smooth_l1_loss(Z_result, Z_result_pred, beta=0.1)
+        if self.top_k_ratio < 1.0:
+            # Hard Feature Mining: Only penalize top K% errors
+            # Use Smooth L1 for stability even in Top-K
+            l1_errors = F.smooth_l1_loss(Z_result, Z_result_pred, beta=0.1, reduction='none') # (B, D)
+            k = int(l1_errors.shape[1] * self.top_k_ratio)
+            k = max(1, k)
+            top_k_errors, _ = torch.topk(l1_errors, k, dim=1)
+            loss_l1 = top_k_errors.mean()
+        else:
+            # Standard Mean L1 (using Smooth L1 for stability)
+            loss_l1 = F.smooth_l1_loss(Z_result, Z_result_pred, beta=0.1)
         
         # CLIP text loss
         loss_clip_text = self.clip_text_loss(Z_result_pred)
         
         # Total loss
-        # L_total = loss_cos + 10.0 * loss_l1 + lambda_clip * L_clip
-        total_loss = loss_cos + 10.0 * loss_l1 + self.lambda_text * loss_clip_text
+        # L_total = loss_cos + lambda_l1 * loss_l1 + lambda_text * L_clip
+        total_loss = loss_cos + self.lambda_l1 * loss_l1 + self.lambda_text * loss_clip_text
         
         loss_dict = {
             'total': total_loss,

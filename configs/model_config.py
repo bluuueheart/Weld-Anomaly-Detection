@@ -56,7 +56,7 @@ NUM_CLASSES = 12  # Updated from 6 to match actual dataset (12 categories)
 
 # Causal-FiLM config
 CAUSAL_FILM_CONFIG = {
-    "d_model": 256,  # Increased from 128 for higher capacity
+    "d_model": 512,  # Increased from 256 to compensate for dropout regularization
     "sensor_input_dim": 6,  # Sensor input channels
     "sensor_hidden_dim": 128,  # Increased from 64
     "decoder_num_layers": 2,  # Number of decoder layers

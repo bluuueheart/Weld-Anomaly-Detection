@@ -30,6 +30,60 @@ This file consolidates recent updates and code-change notes. It is a curated, hu
 
 ## Timeline
 
+### 2025-12-02 — Dimension Upgrade & Selective Dropout
+
+#### Goal
+Address the performance drop (AUC ~0.6) caused by excessive dropout regularization leading to underfitting.
+
+#### Changes
+- **Increased Model Capacity**:
+  - Upgraded `d_model` from 256 to **512** in `configs/model_config.py` and all model components.
+  - This provides more redundant capacity to handle the noise introduced by dropout.
+- **Selective Dropout**:
+  - **Removed Dropout** from `video_projector` and `audio_projector` in `src/models/causal_film_model.py`.
+  - **Removed Dropout** from `RobustResultEncoder` in `src/models/causal_encoders.py`.
+  - **Kept Dropout** only in `AntiGenDecoder` (src/models/causal_decoder.py) to maintain the "Noisy Bottleneck" effect without destroying the feature adaptation process.
+
+### 2025-12-02 — Dropout Regularization
+
+#### Goal
+Prevent overfitting to the training set (normal samples) and improve the model's ability to generalize to unseen normal samples, thereby reducing false positives.
+
+#### Changes
+- **Added Dropout (p=0.1)** to key trainable components:
+  - **Projectors**: Added to `video_projector` and `audio_projector` MLPs in `src/models/causal_film_model.py`.
+  - **Result Encoder**: Added to `RobustResultEncoder.projector` in `src/models/causal_encoders.py`.
+  - **Decoder**: Added to `AntiGenDecoder.net` in `src/models/causal_decoder.py` (restoring the "Noisy Bottleneck" effect).
+
+### 2025-12-02 — MLP Projection Layers
+
+#### Goal
+Improve the model's ability to adapt pre-trained features to the causal space by increasing the capacity of the projection layers.
+
+#### Changes
+- **Architecture Upgrade**:
+  - Replaced single-layer `nn.Linear` projectors with **MLP (Multi-Layer Perceptron)** blocks in `src/models/causal_film_model.py`.
+  - **New Structure**: `Linear(Input -> 512) -> LayerNorm -> GELU -> Linear(512 -> d_model)`.
+  - Applied to both `video_projector` (1024 -> d_model) and `audio_projector` (768 -> d_model).
+  - `image_projector` remains `nn.Identity()` as the image features are handled by the `RobustResultEncoder`.
+
+### 2025-12-02 — Hard Feature Mining & Loss Optimization
+
+#### Goal
+Enhance the model's ability to detect subtle anomalies by focusing on hard-to-reconstruct features and stabilizing training.
+
+#### Changes
+- **Hard Feature Mining**:
+  - Implemented Top-K L1 Loss in `src/losses.py`.
+  - Added `top_k_ratio` (default 0.5) to `configs/train_config.py`.
+  - During training, only the top 50% of feature dimensions with the highest reconstruction error contribute to the L1 loss, aligning training objective with the inference anomaly score logic.
+- **Loss Weight Parameterization**:
+  - Extracted the hardcoded L1 loss weight (10.0) into `configs/train_config.py` as `lambda_l1`.
+  - Allows flexible tuning of the balance between Cosine Distance (Direction) and L1 Error (Intensity).
+- **Training Stability**:
+  - Increased `warmup_epochs` from 2 to 5 in `configs/train_config.py`.
+  - Provides a longer warmup period for the projection layers to stabilize before full optimization, reducing the risk of early divergence or overfitting.
+
 ### 2025-11-30 — Loss & Hyperparameter Optimization
 
 #### Goal
@@ -334,6 +388,46 @@ The following files were copied into `docs/archive/` (originals remain in `docs/
 - UPDATE_2025-10-21_V4_EARLY_STOP.md
 
 (You can remove the originals from `docs/` after verifying the archive. Recommended: keep `QUICKSTART.md` and `README.md` in their places.)
+
+### 2025-12-03 — Feature Noise Injection
+
+#### Goal
+Prevent the model from overfitting to the reconstruction task (where `recon_l1` drops too low) by injecting noise into the features during training.
+
+#### Changes
+- **Configuration**:
+  - Added `"feature_noise": 0.01` to `configs/train_config.py`.
+- **Model Architecture**:
+  - Updated `CausalFiLMModel` in `src/models/causal_film_model.py` to accept `feature_noise`.
+  - **Input Noise**: During training, Gaussian noise is added to the raw features from the frozen video and audio encoders (`F_video_raw`, `F_audio_raw`). This forces the model to be robust to input variations.
+- **Training Script**:
+  - Updated `src/train_causal_film.py` to pass the `feature_noise` parameter from the training config to the model factory.
+
+### 2025-12-02 — Loss Function Refinement
+
+#### Goal
+Combine the benefits of Hard Feature Mining (Top-K) with the stability of Smooth L1 Loss, while maintaining a lower semantic constraint to avoid underfitting.
+
+#### Changes
+- **Top-K Smooth L1 Loss**:
+  - Modified `src/losses.py` to use `F.smooth_l1_loss` (beta=0.1) instead of `torch.abs` (L1) when calculating errors for Top-K selection.
+  - This ensures that even when focusing on the hardest features, the gradients remain stable and less sensitive to outliers than pure L1.
+- **Hyperparameters**:
+  - Confirmed `lambda_text` is set to **0.01** in `configs/train_config.py`.
+  - This lower weight (compared to 0.1) gives the decoder more freedom to reconstruct the specific details of the input without being overly constrained by the generic "normal weld" text embedding.
+
+### 2025-12-03 — Random Feature Masking
+
+#### Goal
+Replace Gaussian noise injection with Random Feature Masking to encourage robustness without altering feature magnitudes, aiming to prevent overfitting.
+
+#### Changes
+- **Configuration**:
+  - Set `"feature_noise": 0.0` in `configs/train_config.py` (temporarily disabled).
+  - Added `"feature_mask_ratio": 0.25` in `configs/train_config.py`.
+- **Model Architecture**:
+  - Updated `CausalFiLMModel` in `src/models/causal_film_model.py` to accept `feature_mask_ratio`.
+  - **Feature Masking**: During training, 25% of the elements in `F_video_raw` and `F_audio_raw` are randomly set to zero. The remaining elements are scaled by `1 / (1 - p)` to maintain the expected magnitude.
 
 ## Notes
 

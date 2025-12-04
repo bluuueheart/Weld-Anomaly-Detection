@@ -605,9 +605,9 @@ class Trainer:
         avg_loss = epoch_loss / len(self.train_loader)
         
         return {
-            "loss": avg_loss,
-            "time": epoch_time,
-            "lr": self.optimizer.param_groups[0]['lr'],
+            "train/loss": avg_loss,
+            "train/time": epoch_time,
+            "train/lr": self.optimizer.param_groups[0]['lr'],
         }
     
     @torch.no_grad()
@@ -635,7 +635,7 @@ class Trainer:
         
         avg_loss = val_loss / len(self.val_loader)
         
-        return {"loss": avg_loss}
+        return {"val/loss": avg_loss}
 
     @torch.no_grad()
     def extract_features(self, loader):
@@ -767,7 +767,7 @@ class Trainer:
             self.train_log.append(train_metrics)
 
             # Print training loss
-            print(f"  Training Loss: {train_metrics['loss']:.4f}")
+            print(f"  Training Loss: {train_metrics['train/loss']:.4f}")
 
             # --- Compute train features & training-set accuracy (nearest-centroid) ---
             try:
@@ -783,7 +783,7 @@ class Trainer:
             if train_acc is not None:
                 # annotate last appended train_metrics with acc for logging
                 if isinstance(self.train_log[-1], dict):
-                    self.train_log[-1]["acc"] = float(train_acc)
+                    self.train_log[-1]["train/acc"] = float(train_acc)
                 print(f"  Training Acc (centroid): {train_acc:.4f}")
             
             # Save logs incrementally (every epoch)
@@ -809,17 +809,17 @@ class Trainer:
 
                 # Append and print
                 if val_acc is not None:
-                    val_metrics["acc"] = float(val_acc)
+                    val_metrics["val/acc"] = float(val_acc)
                 self.val_log.append(val_metrics)
 
-                print(f"  Validation Loss: {val_metrics['loss']:.4f}")
+                print(f"  Validation Loss: {val_metrics['val/loss']:.4f}")
                 if val_acc is not None:
-                    print(f"  Validation Acc (centroid): {val_metrics['acc']:.4f}")
+                    print(f"  Validation Acc (centroid): {val_metrics['val/acc']:.4f}")
                 
                 # Check if best
-                is_best = val_metrics["loss"] < self.best_metric
+                is_best = val_metrics["val/loss"] < self.best_metric
                 if is_best:
-                    self.best_metric = val_metrics["loss"]
+                    self.best_metric = val_metrics["val/loss"]
                     self.epochs_without_improvement = 0
                 else:
                     self.epochs_without_improvement += 1
@@ -839,11 +839,11 @@ class Trainer:
                 # Skip scheduler updates during warmup
                 if not (hasattr(self, 'warmup_epochs') and self.warmup_epochs > 0 and epoch < self.warmup_epochs):
                     if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                        self.scheduler.step(val_metrics["loss"])
+                        self.scheduler.step(val_metrics["val/loss"])
                     else:
                         self.scheduler.step()
             
-            print(f"  Epoch time: {train_metrics['time']:.1f}s")
+            print(f"  Epoch time: {train_metrics['train/time']:.1f}s")
             print()
         
         # Save final logs

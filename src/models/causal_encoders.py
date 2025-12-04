@@ -174,7 +174,7 @@ class DummyResultEncoder(nn.Module):
 
 
 class RobustResultEncoder(nn.Module):
-    def __init__(self, output_dim=256): # Note: Updated output_dim to 256 to match your config
+    def __init__(self, output_dim=512): # Note: Updated output_dim to 512 to match your config
         super().__init__()
         
         # 1. Independent Norms (Keep this from Plan E)
@@ -195,6 +195,7 @@ class RobustResultEncoder(nn.Module):
             nn.Linear(1536, 512),
             nn.LayerNorm(512),
             nn.SiLU(), # Swish/SiLU is better than ReLU for modern networks
+            # Removed Dropout here to prevent underfitting
             nn.Linear(512, output_dim)
             # No LayerNorm or activation at the end to allow values to grow freely
         )

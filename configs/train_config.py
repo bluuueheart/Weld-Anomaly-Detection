@@ -3,15 +3,15 @@
 # Training hyperparameters
 TRAIN_CONFIG = {
     # Optimization
-    "batch_size": 32,  # Increased for SupConLoss (need more positive pairs per batch)
+    "batch_size": 64,  # Increased for SupConLoss (need more positive pairs per batch)
     "num_epochs": 100,
-    "learning_rate": 1e-4,  # Increased for faster convergence (target >0.9 AUROC in 20 epochs)
-    "weight_decay": 1e-4,  # Reduced from 1e-2 to allow faster feature adaptation
+    "learning_rate": 5e-5,  # Increased for faster convergence (target >0.9 AUROC in 20 epochs)
+    "weight_decay": 1e-3,  # Reduced from 1e-2 to allow faster feature adaptation
     "optimizer": "adamw",  # "adam", "adamw", "sgd"
     
     # Learning rate schedule (with linear warmup)
     "lr_scheduler": "cosine_warmup",  # "cosine", "cosine_warmup", "step", "plateau", "none"
-    "warmup_epochs": 2,  # Reduced from 5 for faster startup
+    "warmup_epochs": 5,  # Increased to 5 for better stability
     "warmup_start_lr": 1e-6,  # Higher start LR
     "min_lr": 1e-7,  # Lower floor to allow aggressive decay
     
@@ -23,11 +23,15 @@ TRAIN_CONFIG = {
     "supcon_weight": 1.0,
     
     # Causal-FiLM specific loss parameters
-    "lambda_text": 0.01,  # Reduced from 0.1 to release decoder capacity
+    "lambda_text": 0.01,   # Kept at 0.01 to allow reconstruction freedom
+    "lambda_l1": 1.0,    # Weight for L1 reconstruction loss
+    "top_k_ratio": 0.5,   # Ratio of top-k features for Hard Feature Mining (1.0 = all features)
     
     # Regularization via data augmentation
     "use_mixup": False,  # Feature-level mixup
     "mixup_alpha": 0.2,  # Beta distribution param (0.2 = conservative mixing)
+    "feature_noise": 0.0, # Add Gaussian noise to features during training
+    "feature_mask_ratio": 0.25, # Randomly mask out features during training
     
     # Training strategy
     "freeze_encoders_epochs": 0,  # Freeze encoders for first N epochs (0 = no freeze)

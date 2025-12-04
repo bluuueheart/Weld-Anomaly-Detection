@@ -263,14 +263,15 @@ class DummyCausalDecoder(nn.Module):
 class AntiGenDecoder(nn.Module):
     """
     Simple, single-stream AntiGenDecoder.
-    Process -> 256. No dual heads.
+    Process -> 512. No dual heads.
     """
-    def __init__(self, d_model: int = 256):
+    def __init__(self, d_model: int = 512):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.LayerNorm(d_model),
             nn.SiLU(),
+            nn.Dropout(0.1),  # Added Dropout (Noisy Bottleneck effect)
             nn.Linear(d_model, d_model)
             # No LayerNorm or activation at the end to allow values to grow freely
         )

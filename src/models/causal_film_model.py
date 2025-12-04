@@ -76,12 +76,14 @@ class CausalFiLMModel(nn.Module):
         video_config: Optional[Dict] = None,
         image_config: Optional[Dict] = None,
         audio_config: Optional[Dict] = None,
-        d_model: int = 128,
+        d_model: int = 512,
         sensor_input_dim: int = 6,
         sensor_hidden_dim: int = 64,
         decoder_num_layers: int = 2,
         decoder_dropout: float = 0.2,
         top_k_ratio: float = 0.5,
+        feature_noise: float = 0.0,
+        feature_mask_ratio: float = 0.0,
         use_dummy: bool = False,
     ):
         super().__init__()
@@ -92,6 +94,8 @@ class CausalFiLMModel(nn.Module):
         
         self.d_model = d_model
         self.top_k_ratio = top_k_ratio
+        self.feature_noise = feature_noise
+        self.feature_mask_ratio = feature_mask_ratio
         self.use_dummy = use_dummy
         
         # ===== L0: Frozen Feature Extractors =====
@@ -129,10 +133,23 @@ class CausalFiLMModel(nn.Module):
                 local_model_path=image_config.get("local_model_path"),
             )
         
-        # Projection layers to unified d_model=128
-        self.video_projector = nn.Linear(1024, d_model)
-        self.audio_projector = nn.Linear(768, d_model)
-        self.image_projector = nn.Linear(768, d_model)
+        # Projection layers to unified d_model=512
+        # Use MLP instead of single Linear layer for better feature adaptation
+        # Removed Dropout here to prevent underfitting; keeping it only in Decoder
+        self.video_projector = nn.Sequential(
+            nn.Linear(1024, 512),
+            nn.LayerNorm(512),
+            nn.GELU(),
+            nn.Linear(512, d_model)
+        )
+        self.audio_projector = nn.Sequential(
+            nn.Linear(768, 512),
+            nn.LayerNorm(512),
+            nn.GELU(),
+            nn.Linear(512, d_model)
+        )
+        # Image projector is handled inside ResultEncoder (RobustResultEncoder)
+        self.image_projector = nn.Identity()
         
         # ===== L1: FiLM Sensor Modulation =====
         if use_dummy:
@@ -205,6 +222,22 @@ class CausalFiLMModel(nn.Module):
             F_audio_raw = self.audio_encoder(audio)  # (B, T_a, 768)
             # F_image_raw = self.image_encoder(images)  # (B, N, 768)
             dino_outputs = self.image_encoder(images) # New: dict with hidden_states
+        
+        # Apply feature noise during training (Regularization)
+        if self.training:
+            if self.feature_noise > 0:
+                F_video_raw = F_video_raw + torch.randn_like(F_video_raw) * self.feature_noise
+                F_audio_raw = F_audio_raw + torch.randn_like(F_audio_raw) * self.feature_noise
+            
+            if self.feature_mask_ratio > 0:
+                # Create binary masks (1 = keep, 0 = drop)
+                video_mask = (torch.rand_like(F_video_raw) > self.feature_mask_ratio).float()
+                audio_mask = (torch.rand_like(F_audio_raw) > self.feature_mask_ratio).float()
+                
+                # Apply mask and scale to maintain magnitude
+                scale = 1.0 / (1.0 - self.feature_mask_ratio)
+                F_video_raw = F_video_raw * video_mask * scale
+                F_audio_raw = F_audio_raw * audio_mask * scale
         
         # Project to unified dimension d_model=128
         F_video = self.video_projector(F_video_raw)  # (B, T_v, 128)
@@ -336,6 +369,8 @@ def create_causal_film_model(config: Dict, use_dummy: bool = False) -> CausalFiL
         decoder_num_layers=causal_film_config.get("decoder_num_layers", 2),
         decoder_dropout=causal_film_config.get("decoder_dropout", 0.2),
         top_k_ratio=causal_film_config.get("top_k_ratio", 0.5),
+        feature_noise=causal_film_config.get("feature_noise", 0.0),
+        feature_mask_ratio=causal_film_config.get("feature_mask_ratio", 0.0),
         use_dummy=use_dummy,
     )
     
