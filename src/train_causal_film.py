@@ -234,7 +234,7 @@ class CausalFiLMTrainer:
         val_dataset = WeldingDataset(
             data_root=DATA_ROOT,
             manifest_path=MANIFEST_PATH,
-            split='test',
+            split='val',
             video_length=VIDEO_LENGTH,
             audio_sample_rate=AUDIO_SAMPLE_RATE,
             audio_duration=AUDIO_DURATION,

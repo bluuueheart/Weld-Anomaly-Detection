@@ -34,8 +34,8 @@ git clone https://github.com/yourusername/Weld-Anomaly-Detection.git
 cd Weld-Anomaly-Detection
 
 # 创建虚拟环境
-conda create -n weld-ad python=3.9
-conda activate weld-ad
+conda create -n weld python=3.9
+conda activate weld
 
 # 安装PyTorch (根据你的CUDA版本)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118

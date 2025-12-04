@@ -3,7 +3,7 @@
 # Training hyperparameters
 TRAIN_CONFIG = {
     # Optimization
-    "batch_size": 64,  # Increased for SupConLoss (need more positive pairs per batch)
+    "batch_size": 32,  # Increased for SupConLoss (need more positive pairs per batch)
     "num_epochs": 100,
     "learning_rate": 5e-5,  # Increased for faster convergence (target >0.9 AUROC in 20 epochs)
     "weight_decay": 1e-3,  # Reduced from 1e-2 to allow faster feature adaptation
@@ -31,7 +31,7 @@ TRAIN_CONFIG = {
     "use_mixup": False,  # Feature-level mixup
     "mixup_alpha": 0.2,  # Beta distribution param (0.2 = conservative mixing)
     "feature_noise": 0.0, # Add Gaussian noise to features during training
-    "feature_mask_ratio": 0.25, # Randomly mask out features during training
+    "feature_mask_ratio": 0.2, # Randomly mask out features during training
     
     # Training strategy
     "freeze_encoders_epochs": 0,  # Freeze encoders for first N epochs (0 = no freeze)

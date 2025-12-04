@@ -30,6 +30,23 @@ This file consolidates recent updates and code-change notes. It is a curated, hu
 
 ## Timeline
 
+### 2025-12-04 — Unsupervised Dataset Resplit
+
+#### Goal
+Strictly enforce unsupervised learning paradigm by ensuring the training set contains **only** normal ("Good") samples, while validation and test sets contain both normal and defective samples for realistic evaluation.
+
+#### Changes
+- **Dataset Resplit**:
+  - Updated `scripts/resplit_dataset.py` with `--unsupervised` mode.
+  - **New Split Statistics**:
+    - **Train**: 576 samples (All "Good").
+    - **Val**: 1732 samples (122 "Good" + 1610 "Defective").
+    - **Test**: 1732 samples (121 "Good" + 1611 "Defective").
+  - This ensures zero leakage of anomalies into the training set.
+- **Training Script Update**:
+  - Modified `src/train_causal_film.py` to use `split='val'` for the validation data loader (previously used `split='test'`).
+  - This aligns the training validation step with the new explicit validation set.
+
 ### 2025-12-02 — Dimension Upgrade & Selective Dropout
 
 #### Goal

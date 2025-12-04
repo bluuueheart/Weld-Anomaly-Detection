@@ -22,10 +22,7 @@ fi
 CHECKPOINT_PATH=$1
 
 # Evaluation command
-python src/evaluate_causal_film.py \
-    --checkpoint "$CHECKPOINT_PATH" \
-    --split test \
-    --device cuda
+python src/evaluate_causal_film.py --checkpoint "$CHECKPOINT_PATH" --split test --device cuda
 
 echo ""
 echo "==============================================="
