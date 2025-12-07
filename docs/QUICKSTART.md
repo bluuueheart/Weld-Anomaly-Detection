@@ -10,10 +10,11 @@
 1. [环境准备](#1-环境准备)
 2. [模型选择](#2-模型选择)
 3. [Causal-FiLM使用指南](#3-causal-film使用指南)
-4. [Late Fusion使用指南](#4-late-fusion使用指南)
-5. [SupCon使用指南](#5-supcon使用指南)
-6. [预期输出](#6-预期输出)
-7. [故障排查](#7-故障排查)
+4. [Late Fusion Baseline使用指南](#4-late-fusion-baseline使用指南)
+5. [Causal-FiLM + Video AE 融合指南](#5-causal-film--video-ae-融合指南)
+6. [SupCon使用指南](#6-supcon使用指南)
+7. [预期输出](#7-预期输出)
+8. [故障排查](#8-故障排查)
 
 ---
 
@@ -69,11 +70,12 @@ Data/
 
 ## 2. 模型选择
 
-本项目提供两种模型架构：
+本项目提供多种模型架构：
 
 | 模型 | 类型 | 训练数据 | 优势 | 使用场景 |
 |------|------|----------|------|----------|
 | **Causal-FiLM** (V5) | 无监督异常检测 | 仅正常样本 | 无需标注异常，泛化性强 | **推荐**：异常样本稀缺 |
+| **Late Fusion Baseline** | 无监督异常检测 | 仅正常样本 | 论文原始方法，公平对比基准 | 基线对比实验 |
 | **SupCon** (V4) | 监督对比学习 | 正常+异常样本 | 分类精度高 | 异常样本充足 |
 
 ---
@@ -161,11 +163,73 @@ with torch.no_grad():
 
 ---
 
-## 4. Late Fusion使用指南 (Plan E + Video AE)
+## 4. Late Fusion Baseline使用指南
 
-为了进一步提升SOTA性能，我们引入了**Late Fusion**策略，结合Causal-FiLM模型与专用的Video Autoencoder。
+### 4.1 架构概述
 
-### 4.1 训练 Video Autoencoder
+Late Fusion是论文的原始基线方法，用于公平对比实验：
+
+- **音频自编码器**: 1D CNN，输入STFT频谱图
+  - 架构：BatchNorm -> Conv -> 3×Conv -> Bottleneck
+  - 参数量：31.67M
+  - 训练：50 epochs, One-Cycle LR
+  
+- **视频自编码器**: 两阶段模型
+  - Stage 1: 冻结的SlowFast特征提取
+  - Stage 2: 全连接自编码器
+  - 训练：最大1000 epochs，早停
+  
+- **后期融合**: 
+  - 标准化后加权组合
+  - 权重在验证集上优化 (w_audio=0.37, w_video=0.63)
+
+### 4.2 训练
+
+```bash
+# 训练两个自编码器
+bash baselines/Late_Fusion/train.sh --modality both
+
+# 仅训练音频模型
+bash baselines/Late_Fusion/train.sh --modality audio
+
+# 仅训练视频模型
+bash baselines/Late_Fusion/train.sh --modality video
+
+# 使用dummy数据测试
+bash baselines/Late_Fusion/train.sh --modality both --dummy
+```
+
+### 4.3 评估
+
+```bash
+# 评估并融合（自动优化权重）
+bash baselines/Late_Fusion/evaluate.sh
+
+# 使用dummy数据测试
+bash baselines/Late_Fusion/evaluate.sh --dummy
+```
+
+**输出**:
+- 音频模型 Test AUC
+- 视频模型 Test AUC
+- 融合模型 Test AUC
+- 每种缺陷类型的AUC
+- ROC曲线对比图
+
+### 4.4 预期结果
+
+根据论文报告：
+- 音频 AUC: ~0.8460
+- 视频 AUC: ~0.8977
+- 融合 AUC: ~0.9178
+
+---
+
+## 5. Causal-FiLM + Video AE 融合指南
+
+为了进一步提升SOTA性能，我们引入了**融合策略**，结合Causal-FiLM模型与专用的Video Autoencoder。
+
+### 5.1 训练 Video Autoencoder
 
 Video Autoencoder 专门用于捕捉视频/图像中的外观异常（如 Convexity）。
 
@@ -174,9 +238,9 @@ Video Autoencoder 专门用于捕捉视频/图像中的外观异常（如 Convex
 bash scripts/train_video_ae.sh
 ```
 
-### 4.2 评估融合模型
+### 5.2 评估融合模型
 
-融合模型结合了 Causal-FiLM (Plan E) 和 Video Autoencoder 的分数。
+融合模型结合了 Causal-FiLM 和 Video Autoencoder 的分数。
 
 ```bash
 # 评估融合模型 (需已有 Causal-FiLM 权重 checkpoints/best_model.pth)
@@ -185,16 +249,16 @@ bash scripts/evaluate_fusion.sh
 
 ---
 
-## 5. SupCon使用指南
+## 6. SupCon使用指南
 
-### 5.1 训练
+### 6.1 训练
 
 ```bash
 # 使用SupCon训练
 bash scripts/train.sh
 ```
 
-### 5.2 评估
+### 6.2 评估
 
 ```bash
 # k-NN评估
@@ -203,9 +267,9 @@ bash scripts/evaluate.sh
 
 ---
 
-## 6. 预期输出
+## 7. 预期输出
 
-### 6.1 Causal-FiLM训练输出
+### 7.1 Causal-FiLM训练输出
 
 ```
 ======================================================================
@@ -265,7 +329,7 @@ Computing metrics...
 
 ---
 
-## 6. 故障排查
+## 8. 故障排查
 
 ### 6.1 CLIP导入错误
 

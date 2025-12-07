@@ -30,6 +30,59 @@ This file consolidates recent updates and code-change notes. It is a curated, hu
 
 ## Timeline
 
+### 2025-12-07 — Late Fusion Baseline Implementation
+
+#### Goal
+Implement the Late Fusion baseline model for fair comparison following the paper's original approach and the unified experimental protocol in `baselines/setup.md`.
+
+#### Implementation
+- **Baseline Model**: Late Fusion (Audio + Video auto-encoders)
+- **Location**: `baselines/Late_Fusion/`
+- **Components**:
+  - **Audio Auto-Encoder**: 1D CNN following Table 5 specifications
+    - Input: STFT spectrogram (n_bins=8193, n_fft=16384, hop_length=8192)
+    - Architecture: BatchNorm -> Conv(8193->1024) -> 3×Conv(1024->1024) -> Conv(1024->48)
+    - Decoder: Symmetric transpose convolutions
+    - Parameters: 31,670,306
+  - **Video Auto-Encoder**: Two-stage model following Table 6
+    - Stage 1: Frozen SlowFast feature extractor (2304-dim)
+    - Stage 2: FC auto-encoder (2304->512->256->128->64->64->...->2304)
+    - Dropout: 0.5
+  - **Late Fusion**: Weighted combination after standardization
+    - Audio weight: 0.37, Video weight: 0.63 (optimized on validation set)
+
+#### Training Configuration
+- **Audio**: Adam, One-Cycle LR (max=1e-4), 50 epochs, MSE loss
+- **Video**: Adam (lr=5e-4), max 1000 epochs with early stopping (patience=50), MSE loss
+- **Common**: Batch size=32, seed=42
+- **Dataset Split**: Follows paper specification
+  - Train: 576 Good samples
+  - Val: 122 Good + 1610 Defective
+  - Test: 121 Good + 1611 Defective
+
+#### Evaluation Protocol
+- **Score Aggregation**:
+  - Audio: Expected Value (mean of frame scores)
+  - Video: Max over 2s-MA (max of 2-second moving average)
+- **Standardization**: Using training set statistics
+- **Fusion**: Grid search on validation set (step=0.01)
+- **Metrics**: AUC (overall + per-class), ROC curves
+
+#### Expected Results
+- Audio Test AUC: ~0.8460
+- Video Test AUC: ~0.8977
+- Fusion Test AUC: ~0.9178
+
+#### Files Created
+- `baselines/Late_Fusion/config.py`: Configuration parameters
+- `baselines/Late_Fusion/models.py`: Model architectures
+- `baselines/Late_Fusion/utils.py`: Utilities (STFT, aggregation, evaluation)
+- `baselines/Late_Fusion/train.py`: Training script
+- `baselines/Late_Fusion/evaluate.py`: Evaluation script
+- `baselines/Late_Fusion/train.sh`: Training shell script
+- `baselines/Late_Fusion/evaluate.sh`: Evaluation shell script
+- Updated `baselines/Late_Fusion/README.md`: Added implementation record
+
 ### 2025-12-04 — Unsupervised Dataset Resplit
 
 #### Goal
