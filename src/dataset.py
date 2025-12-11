@@ -45,6 +45,9 @@ class WeldingDataset(Dataset):
         audio_mel_bins: int = 64,
         audio_frames: int = 32,
         audio_sr: int = 16000,
+        audio_type: str = "mel",  # 'mel' or 'stft'
+        n_fft: int = 2048,  # FFT window size for STFT
+        hop_length: int = 512,  # Hop length for STFT
         sensor_len: int = 128,
         sensor_channels: int = 6,
         seed: Optional[int] = 42,
@@ -86,6 +89,9 @@ class WeldingDataset(Dataset):
         self.audio_mel_bins = int(audio_mel_bins)
         self.audio_frames = int(audio_frames)
         self.audio_sr = int(audio_sr)
+        self.audio_type = audio_type
+        self.n_fft = int(n_fft)
+        self.hop_length = int(hop_length)
         self.sensor_len = int(sensor_len)
         self.sensor_channels = int(sensor_channels)
 
@@ -234,7 +240,12 @@ class WeldingDataset(Dataset):
         vshape = (self.num_frames, 3, self.frame_size, self.frame_size)
         # post_weld_images: (num_angles, 3, image_size, image_size)
         ishape = (self.num_angles, 3, self.image_size, self.image_size)
-        ashape = (1, self.audio_mel_bins, self.audio_frames)
+        # audio: shape depends on audio_type
+        if self.audio_type == "stft":
+            n_bins = self.n_fft // 2 + 1
+            ashape = (1, n_bins, self.audio_frames)
+        else:
+            ashape = (1, self.audio_mel_bins, self.audio_frames)
         sshape = (self.sensor_len, self.sensor_channels)
 
         if np is not None:
@@ -466,7 +477,12 @@ class WeldingDataset(Dataset):
         return out
 
     def _read_audio(self, sample_dir: str) -> Any:
-        """Load audio file and convert to mel-spectrogram numpy array shaped (1, n_mels, audio_frames)."""
+        """Load audio file and convert to mel-spectrogram or STFT numpy array.
+        
+        Returns:
+            For mel: (1, n_mels, audio_frames)
+            For stft: (1, n_bins, audio_frames) where n_bins = n_fft // 2 + 1
+        """
         try:
             import librosa
             import soundfile as sf
@@ -480,31 +496,43 @@ class WeldingDataset(Dataset):
             if os.path.isfile(p):
                 audio_path = p
                 break
+        
         if audio_path is None:
             # fall back: no audio
-            mel = np.zeros((1, self.audio_mel_bins, self.audio_frames), dtype=np.float32)
-            return mel
+            if self.audio_type == "stft":
+                n_bins = self.n_fft // 2 + 1
+                spec = np.zeros((1, n_bins, self.audio_frames), dtype=np.float32)
+            else:
+                spec = np.zeros((1, self.audio_mel_bins, self.audio_frames), dtype=np.float32)
+            return spec
 
         # load audio
         y, sr = librosa.load(audio_path, sr=self.audio_sr if hasattr(self, 'audio_sr') else 16000)
-        # compute mel spectrogram
-        mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=self.audio_mel_bins)
-        mel_db = librosa.power_to_db(mel, ref=np.max)
+        
+        # compute spectrogram based on audio_type
+        if self.audio_type == "stft":
+            # Compute STFT
+            stft = librosa.stft(y, n_fft=self.n_fft, hop_length=self.hop_length)
+            spec = np.abs(stft)  # magnitude spectrogram (n_bins, time)
+        else:
+            # compute mel spectrogram
+            mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=self.audio_mel_bins)
+            spec = librosa.power_to_db(mel, ref=np.max)
 
         # time dimension length
-        T = mel_db.shape[1]
+        T = spec.shape[1]
         if T >= self.audio_frames:
             # sample or crop to audio_frames evenly
             indices = [int(round(i * (T - 1) / (self.audio_frames - 1))) if self.audio_frames > 1 else 0 for i in range(self.audio_frames)]
-            mel_db = mel_db[:, indices]
+            spec = spec[:, indices]
         else:
             # pad with minimum value
             pad_width = self.audio_frames - T
-            mel_db = np.pad(mel_db, ((0, 0), (0, pad_width)), mode='constant', constant_values=(mel_db.min() if mel_db.size else 0.0,))
+            spec = np.pad(spec, ((0, 0), (0, pad_width)), mode='constant', constant_values=(spec.min() if spec.size else 0.0,))
 
-        mel_db = mel_db.astype(np.float32)
-        mel_db = np.expand_dims(mel_db, axis=0)
-        return mel_db
+        spec = spec.astype(np.float32)
+        spec = np.expand_dims(spec, axis=0)
+        return spec
 
     def _read_sensor(self, sample_dir: str) -> Any:
         """Read CSV sensor data, select numeric columns, resample/interpolate to self.sensor_len and z-score normalize.

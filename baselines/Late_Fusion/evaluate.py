@@ -337,6 +337,11 @@ def main():
         mode="dummy" if args.dummy else "real",
         split="train",
         manifest_path=args.manifest,
+        audio_type="stft",
+        audio_sr=AUDIO_CONFIG["sample_rate"],
+        n_fft=AUDIO_CONFIG["n_fft"],
+        hop_length=AUDIO_CONFIG["hop_length"],
+        audio_frames=1024,
     )
     
     val_dataset = WeldingDataset(
@@ -344,6 +349,11 @@ def main():
         mode="dummy" if args.dummy else "real",
         split="val",
         manifest_path=args.manifest,
+        audio_type="stft",
+        audio_sr=AUDIO_CONFIG["sample_rate"],
+        n_fft=AUDIO_CONFIG["n_fft"],
+        hop_length=AUDIO_CONFIG["hop_length"],
+        audio_frames=1024,
     )
     
     test_dataset = WeldingDataset(
@@ -351,6 +361,11 @@ def main():
         mode="dummy" if args.dummy else "real",
         split="test",
         manifest_path=args.manifest,
+        audio_type="stft",
+        audio_sr=AUDIO_CONFIG["sample_rate"],
+        n_fft=AUDIO_CONFIG["n_fft"],
+        hop_length=AUDIO_CONFIG["hop_length"],
+        audio_frames=1024,
     )
     
     train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
@@ -360,36 +375,84 @@ def main():
     # Load models
     print("\nLoading models...")
     
-    # Audio model
-    n_bins = AUDIO_CONFIG["n_fft"] // 2 + 1
-    audio_model = AudioAutoEncoder(
-        n_bins=n_bins,
-        bottleneck_dim=AUDIO_CONFIG["bottleneck_dim"],
-        hidden_channels=AUDIO_CONFIG["hidden_channels"],
-        num_conv_layers=AUDIO_CONFIG["num_conv_layers"],
-    )
-    
+    # Audio model - Load from checkpoint to get correct config
     if os.path.exists(args.audio_checkpoint):
         checkpoint = torch.load(args.audio_checkpoint, map_location=args.device)
+        
+        # Use config from checkpoint if available, otherwise use default
+        if "config" in checkpoint:
+            audio_config = checkpoint["config"]
+            n_bins = audio_config["n_fft"] // 2 + 1
+            bottleneck_dim = audio_config["bottleneck_dim"]
+            hidden_channels = audio_config["hidden_channels"]
+            num_conv_layers = audio_config["num_conv_layers"]
+        else:
+            # Fallback to default config
+            n_bins = AUDIO_CONFIG["n_fft"] // 2 + 1
+            bottleneck_dim = AUDIO_CONFIG["bottleneck_dim"]
+            hidden_channels = AUDIO_CONFIG["hidden_channels"]
+            num_conv_layers = AUDIO_CONFIG["num_conv_layers"]
+        
+        audio_model = AudioAutoEncoder(
+            n_bins=n_bins,
+            bottleneck_dim=bottleneck_dim,
+            hidden_channels=hidden_channels,
+            num_conv_layers=num_conv_layers,
+        )
+        
         audio_model.load_state_dict(checkpoint["model_state_dict"])
         print(f"  Loaded audio model from {args.audio_checkpoint}")
+        print(f"    n_bins={n_bins}, bottleneck_dim={bottleneck_dim}, "
+              f"hidden_channels={hidden_channels}, num_conv_layers={num_conv_layers}")
     else:
         print(f"  Warning: Audio checkpoint not found at {args.audio_checkpoint}")
+        # Create model with default config
+        n_bins = AUDIO_CONFIG["n_fft"] // 2 + 1
+        audio_model = AudioAutoEncoder(
+            n_bins=n_bins,
+            bottleneck_dim=AUDIO_CONFIG["bottleneck_dim"],
+            hidden_channels=AUDIO_CONFIG["hidden_channels"],
+            num_conv_layers=AUDIO_CONFIG["num_conv_layers"],
+        )
     
-    # Video model
-    video_model = VideoAutoEncoder(
-        feature_dim=VIDEO_CONFIG["feature_dim"],
-        encoder_layers=VIDEO_CONFIG["encoder_layers"],
-        decoder_layers=VIDEO_CONFIG["decoder_layers"],
-        dropout=VIDEO_CONFIG["dropout"],
-    )
-    
+    # Video model - Load from checkpoint to get correct config
     if os.path.exists(args.video_checkpoint):
         checkpoint = torch.load(args.video_checkpoint, map_location=args.device)
+        
+        # Use config from checkpoint if available, otherwise use default
+        if "config" in checkpoint:
+            video_config = checkpoint["config"]
+            feature_dim = video_config["feature_dim"]
+            encoder_layers = video_config["encoder_layers"]
+            decoder_layers = video_config["decoder_layers"]
+            dropout = video_config["dropout"]
+        else:
+            # Fallback to default config
+            feature_dim = VIDEO_CONFIG["feature_dim"]
+            encoder_layers = VIDEO_CONFIG["encoder_layers"]
+            decoder_layers = VIDEO_CONFIG["decoder_layers"]
+            dropout = VIDEO_CONFIG["dropout"]
+        
+        video_model = VideoAutoEncoder(
+            feature_dim=feature_dim,
+            encoder_layers=encoder_layers,
+            decoder_layers=decoder_layers,
+            dropout=dropout,
+        )
+        
         video_model.load_state_dict(checkpoint["model_state_dict"])
         print(f"  Loaded video model from {args.video_checkpoint}")
+        print(f"    feature_dim={feature_dim}, encoder_layers={encoder_layers}, "
+              f"decoder_layers={decoder_layers}, dropout={dropout}")
     else:
         print(f"  Warning: Video checkpoint not found at {args.video_checkpoint}")
+        # Create model with default config
+        video_model = VideoAutoEncoder(
+            feature_dim=VIDEO_CONFIG["feature_dim"],
+            encoder_layers=VIDEO_CONFIG["encoder_layers"],
+            decoder_layers=VIDEO_CONFIG["decoder_layers"],
+            dropout=VIDEO_CONFIG["dropout"],
+        )
     
     # Evaluate models
     print("\n" + "=" * 70)

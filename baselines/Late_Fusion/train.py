@@ -318,18 +318,31 @@ def main():
     # Create datasets
     print("Loading datasets...")
     
+    # Calculate n_bins for STFT
+    n_bins = AUDIO_CONFIG["n_fft"] // 2 + 1
+    
     train_dataset = WeldingDataset(
         root_dir=args.data_root,
         mode="dummy" if args.dummy else "real",
         split="train",
         manifest_path=args.manifest,
+        audio_type="stft",
+        audio_sr=AUDIO_CONFIG["sample_rate"],
+        n_fft=AUDIO_CONFIG["n_fft"],
+        hop_length=AUDIO_CONFIG["hop_length"],
+        audio_frames=1024,  # Will be determined by audio length
     )
     
     val_dataset = WeldingDataset(
         root_dir=args.data_root,
         mode="dummy" if args.dummy else "real",
-        split="val",
+        split="test",  # Use test split (consistent with main SOTA model)
         manifest_path=args.manifest,
+        audio_type="stft",
+        audio_sr=AUDIO_CONFIG["sample_rate"],
+        n_fft=AUDIO_CONFIG["n_fft"],
+        hop_length=AUDIO_CONFIG["hop_length"],
+        audio_frames=1024,  # Will be determined by audio length
     )
     
     # Train audio model

@@ -45,11 +45,11 @@ VIDEO_CONFIG = {
     
     # Training parameters
     "batch_size": 32,
-    "num_epochs": 1000,  # Maximum epochs with early stopping
+    "num_epochs": 50,  # Aligned with unified training protocol (setup.md)
     "learning_rate": 5e-4,
     "optimizer": "adam",
     "loss": "mse",
-    "early_stopping_patience": 50,
+    "early_stopping_patience": 10,  # Early stopping for faster convergence
     
     # Inference parameters
     "latency_ms": 1000,  # ~1 second due to 64-frame window
