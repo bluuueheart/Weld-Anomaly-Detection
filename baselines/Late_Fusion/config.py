@@ -19,6 +19,8 @@ AUDIO_CONFIG = {
     
     # Training parameters
     "batch_size": 32,
+    # Smaller eval batch size to prevent OOM/stall with 8193-bin STFT
+    "batch_size_eval": 4,
     "num_epochs": 50,
     "learning_rate": 1e-4,
     "optimizer": "adam",

@@ -151,6 +151,10 @@ def evaluate_single_modality(
     train_scores = aggregate_scores(train_frame_scores, modality)
     val_scores = aggregate_scores(val_frame_scores, modality)
     test_scores = aggregate_scores(test_frame_scores, modality)
+
+    # Binarize labels for AUC (0=good, 1=defect)
+    val_labels_binary = (np.array(val_labels) != 0).astype(int)
+    test_labels_binary = (np.array(test_labels) != 0).astype(int)
     
     # Compute standardization stats from training set
     mean, std = compute_standardization_stats(train_scores)
@@ -161,11 +165,11 @@ def evaluate_single_modality(
     test_scores_std = standardize_scores(test_scores, mean, std)
     
     # Compute AUC on validation set
-    val_auc = roc_auc_score(val_labels, val_scores_std)
+    val_auc = roc_auc_score(val_labels_binary, val_scores_std)
     print(f"  Validation AUC: {val_auc:.4f}")
     
     # Compute AUC on test set
-    test_auc = roc_auc_score(test_labels, test_scores_std)
+    test_auc = roc_auc_score(test_labels_binary, test_scores_std)
     print(f"  Test AUC: {test_auc:.4f}")
     
     # Per-class AUC on test set
@@ -254,16 +258,24 @@ def evaluate_fusion(
     print(f"  Audio stats: mean={audio_mean:.6f}, std={audio_std:.6f}")
     print(f"  Video stats: mean={video_mean:.6f}, std={video_std:.6f}")
     
+    # Diagnostic: Check if video model produces valid outputs
+    if video_std == 0.0:
+        print("  WARNING: Video model outputs are constant (std=0). Model may not be trained properly.")
+    
     val_audio_std = standardize_scores(val_audio, audio_mean, audio_std)
     val_video_std = standardize_scores(val_video, video_mean, video_std)
     test_audio_std = standardize_scores(test_audio, audio_mean, audio_std)
     test_video_std = standardize_scores(test_video, video_mean, video_std)
     
+    # Binarize labels for fusion AUC
+    val_labels_binary = (np.array(val_labels) != 0).astype(int)
+    test_labels_binary = (np.array(test_labels) != 0).astype(int)
+    
     # Optimize fusion weights on validation set
     best_w, best_val_auc, (w_audio, w_video) = optimize_fusion_weights(
         val_audio_std,
         val_video_std,
-        val_labels,
+        val_labels_binary,
         step=FUSION_CONFIG["grid_search_step"],
     )
     
@@ -272,7 +284,7 @@ def evaluate_fusion(
     
     # Apply optimal weights to test set
     test_fused = w_audio * test_audio_std + w_video * test_video_std
-    test_auc_fused = roc_auc_score(test_labels, test_fused)
+    test_auc_fused = roc_auc_score(test_labels_binary, test_fused)
     
     print(f"  Test AUC (fused): {test_auc_fused:.4f}")
     
@@ -368,9 +380,11 @@ def main():
         audio_frames=1024,
     )
     
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    # Audio STFT is large (8193 bins), reduce eval batch size to avoid GPU/CPU stalls
+    audio_batch_size = AUDIO_CONFIG.get("batch_size_eval", max(1, AUDIO_CONFIG["batch_size"] // 4))
+    train_loader = DataLoader(train_dataset, batch_size=audio_batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=audio_batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    test_loader = DataLoader(test_dataset, batch_size=audio_batch_size, shuffle=False, num_workers=4, pin_memory=True)
     
     # Load models
     print("\nLoading models...")

@@ -179,27 +179,82 @@ WELD_DATA_PATH=/your/path bash baselines/M3DM/train.sh
 
 TODO:
 1. 仔细阅读baselines\setup.md，理解任务和当前状态，始终遵守下方全局执行要求。
-2. 现在进度：Epoch [50/50] Train Loss: 0.009289 Val Loss: 0.009620
+2. 现在进度：
+==========================================
+Late Fusion Baseline Evaluation
+==========================================
+Command: python baselines/Late_Fusion/evaluate.py     --audio_checkpoint baselines/Late_Fusion/checkpoints/audio_autoencoder_best.pth     --video_checkpoint baselines/Late_Fusion/checkpoints/video_autoencoder_best.pth     --data_root /root/autodl-tmp/Intel_Robotic_Welding_Multimodal_Dataset/raid/intel_robotic_welding_dataset     --manifest configs/manifest.csv     --output_dir baselines/Late_Fusion/results     --device cuda
 
-Training completed. Final model saved to baselines/Late_Fusion/checkpoints/audio_autoencoder_final.pth
+Loading datasets...
+
+Loading models...
+  Loaded audio model from baselines/Late_Fusion/checkpoints/audio_autoencoder_best.pth
+    n_bins=8193, bottleneck_dim=48, hidden_channels=1024, num_conv_layers=3
+  Loaded video model from baselines/Late_Fusion/checkpoints/video_autoencoder_best.pth
+    feature_dim=2304, encoder_layers=[2304, 512, 256, 128, 64, 64], decoder_layers=[64, 64, 128, 256, 512, 2304], dropout=0.5
 
 ======================================================================
-VIDEO AUTO-ENCODER
+EVALUATION
 ======================================================================
-======================================================================
-TRAINING VIDEO AUTO-ENCODER (Stage 2)
-======================================================================
-Total parameters: 2,715,840
-Trainable parameters: 2,715,840
-Device: cuda
-Max epochs: 1000
-Batch size: 32
-Learning rate: 0.0005
 
-Epoch [1/1000] Batch [10/18] Loss: 0.000180
-Epoch [1/1000] Train Loss: 0.000342 Val Loss: 0.000020
-两个baseline:Late_Fusion和M3DM的epoch对齐了吗？为什么这个Late_Fusion一会儿50epoch一会儿1000epoch？
+Evaluating AUDIO model...
+  Training set stats: mean=0.009136, std=0.015215
+  Validation AUC: 0.4959
+  Test AUC: 0.5140
+  Test AUC per class:
+    overall: 0.0000
+    class_1: 0.6064
+    class_2: 0.6024
+    class_3: 0.3119
+    class_4: 0.5957
+    class_5: 0.4954
+    class_6: 0.4420
+    class_7: 0.7241
+    class_8: 0.4665
+    class_9: 0.8337
+    class_10: 0.4863
+    class_11: 0.1619
 
+Evaluating VIDEO model...
+  Training set stats: mean=0.000000, std=0.000000
+  Validation AUC: 0.5000
+  Test AUC: 0.5000
+  Test AUC per class:
+    overall: 0.0000
+    class_1: 0.5000
+    class_2: 0.5000
+    class_3: 0.5000
+    class_4: 0.5000
+    class_5: 0.5000
+    class_6: 0.5000
+    class_7: 0.5000
+    class_8: 0.5000
+    class_9: 0.5000
+    class_10: 0.5000
+    class_11: 0.5000
+
+Evaluating FUSION model...
+  Audio stats: mean=0.009136, std=0.015215
+  Video stats: mean=0.000000, std=0.000000
+  Optimal weights: audio=0.0000, video=1.0000
+  Validation AUC (fused): 0.0000
+Traceback (most recent call last):
+  File "/root/work/baselines/Late_Fusion/evaluate.py", line 519, in <module>
+    main()
+  File "/root/work/baselines/Late_Fusion/evaluate.py", line 479, in main
+    fusion_results = evaluate_fusion(
+  File "/root/work/baselines/Late_Fusion/evaluate.py", line 279, in evaluate_fusion
+    test_auc_fused = roc_auc_score(test_labels, test_fused)
+  File "/root/miniconda3/envs/weld/lib/python3.10/site-packages/sklearn/utils/_param_validation.py", line 218, in wrapper
+    return func(*args, **kwargs)
+  File "/root/miniconda3/envs/weld/lib/python3.10/site-packages/sklearn/metrics/_ranking.py", line 679, in roc_auc_score
+    raise ValueError("multi_class must be in ('ovo', 'ovr')")
+ValueError: multi_class must be in ('ovo', 'ovr')
+
+==========================================
+Evaluation completed
+Results saved to: baselines/Late_Fusion/results
+==========================================
 
 ## 全局执行要求：
 （step by step 你自己安排）

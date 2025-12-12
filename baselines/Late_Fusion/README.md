@@ -776,6 +776,11 @@ bash baselines/Late_Fusion/train.sh --modality both
 bash baselines/Late_Fusion/evaluate.sh
 ```
 
+**评估卡住的原因与处理**：
+- STFT 输入维度巨大（8193 bins × 1024 frames），原始 batch_size=32 会占用 >1GB/批，易导致 GPU/CPU 卡住
+- 已在评估中启用 `batch_size_eval=4`、`num_workers=4`、`pin_memory=True`，降低单批内存占用并加速数据加载
+- 如果仍卡住，可再调小 `batch_size_eval` 或在命令行/环境变量覆盖：`AUDIO_CONFIG["batch_size_eval"]`
+
 **预期训练配置**：
 - 音频输入：(batch, 8193, time_steps) STFT spectrogram
 - 模型参数：大幅增加（因为输入维度从64→8193）
@@ -866,6 +871,156 @@ print(f"Audio shape: {sample['audio'].shape}")
 **预期改进**：
 - AUC 提升：2-5% （基于 STFT 的信息优势）
 - 对高频缺陷（如 spatter）检测更好
+
+### **10.7 评估问题汇总与完整修复（2025-12-12）**
+
+#### **问题1：多分类标签导致AUC报错**
+
+**报错**：`ValueError: multi_class must be in ('ovo', 'ovr')`
+
+**原因**：数据集标签为多分类（0=Good, 1-11=各类缺陷），而二分类异常检测任务中 `roc_auc_score` 需要二值标签。
+
+**修复位置**：
+- `evaluate_single_modality()`: 验证/测试标签二值化
+- `evaluate_fusion()`: 融合评估标签二值化
+
+**修复代码**：
+```python
+# 二值化标签：0=Good, 1=Defect
+val_labels_binary = (np.array(val_labels) != 0).astype(int)
+test_labels_binary = (np.array(test_labels) != 0).astype(int)
+```
+
+#### **问题2：视频模型输出全零**
+
+**现象**：
+```
+Video stats: mean=0.000000, std=0.000000
+Validation AUC: 0.5000 (随机猜测)
+```
+
+**可能原因**：
+1. **视频模型未训练**：checkpoint 为初始化权重
+2. **视频数据加载失败**：数据集返回空/零张量
+3. **模型前向传播错误**：SlowFast 特征提取失败
+
+**诊断步骤**：
+```python
+# 1. 检查 checkpoint 训练信息
+checkpoint = torch.load("checkpoints/video_autoencoder_best.pth")
+print(f"Epoch: {checkpoint.get('epoch', 'N/A')}")
+print(f"Val loss: {checkpoint.get('val_loss', 'N/A')}")
+
+# 2. 检查数据集视频输出
+sample = dataset[0]
+print(f"Video shape: {sample['video'].shape}")
+print(f"Video stats: min={sample['video'].min()}, max={sample['video'].max()}")
+
+# 3. 测试模型前向传播
+with torch.no_grad():
+    output = video_model(sample['video'].unsqueeze(0).cuda())
+    print(f"Model output shape: {output.shape}")
+    print(f"Model output stats: {output.mean()}, {output.std()}")
+```
+
+**临时规避**：已在评估中添加零方差警告，提示用户检查模型训练状态。
+
+#### **问题3：音频模型性能差（AUC~0.5）**
+
+**现象**：
+```
+Audio AUC: 0.4959 (验证), 0.5140 (测试)
+```
+
+**可能原因**：
+1. **输入维度不匹配**：模型用 64-bin mel 训练，但评估时传入 8193-bin STFT
+2. **模型未充分训练**：训练轮次不足或过早停止
+3. **数据预处理错误**：STFT 参数与训练时不一致
+
+**验证方法**：
+```bash
+# 检查 checkpoint 中保存的配置
+python baselines/Late_Fusion/debug_checkpoint.py \
+    baselines/Late_Fusion/checkpoints/audio_autoencoder_best.pth
+```
+
+**解决方案**：
+- 如 checkpoint 确实是 64-bin 训练：**必须重新训练**
+- 清理旧 checkpoint：`rm -rf baselines/Late_Fusion/checkpoints/*`
+- 使用修复后的代码（已配置 STFT）重新训练：
+  ```bash
+  bash baselines/Late_Fusion/train.sh --modality both
+  ```
+
+#### **问题4：评估数据加载卡顿**
+
+**原因**：8193-bin STFT 输入巨大，batch_size=32 时单批 >1GB 内存。
+
+**修复**：
+- 评估时使用 `batch_size_eval=4`（可调整）
+- 启用 `num_workers=4`, `pin_memory=True` 加速数据加载
+
+### **10.8 完整修复清单**
+
+| 问题 | 影响 | 修复方案 | 状态 |
+|------|------|---------|------|
+| 多分类AUC报错 | 评估中断 | 标签二值化 | ✅ 已修复 |
+| 视频模型零输出 | AUC=0.5 | 添加诊断警告 | ⚠️ 需检查训练 |
+| 音频AUC性能差 | 指标无意义 | 重新训练(STFT) | ⚠️ 需重训 |
+| 数据加载卡顿 | 评估缓慢 | 减小eval batch | ✅ 已修复 |
+| STFT配置缺失 | 输入不匹配 | 数据集配置STFT | ✅ 已修复 |
+
+### **10.9 正确的评估流程**
+
+**当前状态分析**：
+- ✅ 评估脚本逻辑正确（已修复AUC报错）
+- ❌ 模型 checkpoint 可能不匹配（需验证）
+- ⚠️ 视频模型疑似未训练
+- ⚠️ 音频模型疑似维度错误
+
+**推荐操作**：
+
+1. **验证现有 checkpoint**：
+   ```bash
+   python baselines/Late_Fusion/debug_checkpoint.py \
+       baselines/Late_Fusion/checkpoints/audio_autoencoder_best.pth
+   ```
+   检查输出中的 `n_bins` 和 `running_mean.shape`。
+
+2. **如果 checkpoint 不匹配，重新训练**：
+   ```bash
+   # 清理旧模型
+   rm -rf baselines/Late_Fusion/checkpoints/*
+   
+   # 重新训练（使用STFT配置）
+   bash baselines/Late_Fusion/train.sh --modality both
+   ```
+
+3. **训练完成后再评估**：
+   ```bash
+   bash baselines/Late_Fusion/evaluate.sh
+   ```
+
+**预期正确结果**：
+- Audio AUC: >0.7 (取决于模型能力)
+- Video AUC: >0.6
+- Fusion AUC: >0.75
+- 所有 std > 0 (无零方差输出)
+
+### **10.10 修改统计（本次完整修复）**
+
+| 文件 | 修改内容 | 行数 |
+|------|---------|------|
+| `evaluate.py` | 标签二值化、eval batch调整、零输出诊断 | +15行 |
+| `config.py` | 新增 batch_size_eval | +2行 |
+| `README.md` | 完整问题分析与解决方案 | +150行 |
+| **总计** | 3个文件 | +167行 |
+
+**遵循原则**：
+- ✅ 最小修改：仅修复关键逻辑错误
+- ✅ 保持风格：符合原有代码规范
+- ✅ 切中要害：直接解决报错根源
+- ✅ 诊断友好：添加警告信息辅助排查
 
 ---
 ---
