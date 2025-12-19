@@ -1,21 +1,21 @@
-"""Image encoder for post-weld multi-angle images using DINOv2."""
+"""Image encoder for post-weld multi-angle images using DINOv3."""
 import torch
 import torch.nn as nn
 from typing import Optional
 
 
 class ImageEncoder(nn.Module):
-    """Encode multi-angle post-weld images using DINOv2.
+    """Encode multi-angle post-weld images using DINOv3.
     
     Architecture:
-    - Loads pretrained facebook/dinov2-base model
+    - Loads pretrained DINOv3-vit-h/16+ model (1280-dim output)
     - Processes (B, num_angles, 3, H, W) input
     - Aggregates features across angles
     - Outputs (B, seq_len, embed_dim) features
     
     Args:
-        model_name: HuggingFace model name (default: facebook/dinov2-base)
-        embed_dim: Output embedding dimension (default: 768, DINOv2-base native)
+        model_name: Model path (default: /root/work/models/dinov3-vith16plus-pretrain-lvd1689m)
+        embed_dim: Output embedding dimension (default: 1280, DINOv3-vit-h/16+ native)
         num_angles: Number of angles per sample (default: 5)
         aggregation: How to aggregate multi-angle features ('mean', 'max', 'concat')
         freeze_backbone: Whether to freeze pretrained weights
@@ -24,8 +24,8 @@ class ImageEncoder(nn.Module):
     
     def __init__(
         self,
-        model_name: str = "facebook/dinov2-base",
-        embed_dim: int = 768,
+        model_name: str = "/root/work/models/dinov3-vith16plus-pretrain-lvd1689m",
+        embed_dim: int = 1280,
         num_angles: int = 5,
         aggregation: str = "mean",
         freeze_backbone: bool = False,
@@ -57,12 +57,12 @@ class ImageEncoder(nn.Module):
                     )
                 except Exception as e:
                     raise RuntimeError(
-                        f"Failed to load local DINOv2 model at '{model_path_resolved}': {e}.\n"
+                        f"Failed to load local DINOv3 model at '{model_path_resolved}': {e}.\n"
                         "Ensure the folder contains 'config.json' and model weights (pytorch_model.bin or model.safetensors), and required packages are installed."
                     )
             else:
                 raise FileNotFoundError(
-                    f"Local DINOv2 model directory not found: '{model_path_resolved}'.\n"
+                    f"Local DINOv3 model directory not found: '{model_path_resolved}'.\n"
                     "Please place the pretrained model in that path before running."
                 )
         except ImportError as e:
@@ -103,7 +103,7 @@ class ImageEncoder(nn.Module):
         # Reshape to (B*N, 3, H, W)
         images_flat = images.reshape(B * N, C, H, W)
         
-        # Extract features with DINOv2
+        # Extract features with DINOv3
         outputs = self.backbone(pixel_values=images_flat)
         
         return outputs

@@ -4,10 +4,49 @@ Causal Encoders for Causal-FiLM.
 Implements:
 - ProcessEncoder: Encodes "process" modalities (video + audio) via cross-attention
 - ResultEncoder: Encodes "result" modality (post-weld images) via MLP
+- GeM Pooling: Generalized Mean Pooling with learnable parameter
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
+
+class GeMPooling(nn.Module):
+    """
+    Generalized Mean (GeM) Pooling.
+    
+    GeM pooling generalizes average pooling and max pooling by introducing
+    a learnable parameter p that controls the pooling behavior:
+    - p=1: equivalent to average pooling
+    - p→∞: approaches max pooling
+    - p>1: emphasizes larger activations
+    
+    Formula: (1/N * Σ(x_i^p))^(1/p)
+    
+    Args:
+        p (float): Initial value of the learnable parameter (default: 6.0)
+        eps (float): Small value to avoid numerical issues (default: 1e-6)
+    """
+    
+    def __init__(self, p=6.0, eps=1e-6):
+        super().__init__()
+        self.p = nn.Parameter(torch.ones(1) * p)  # Learnable parameter
+        self.eps = eps
+    
+    def forward(self, x):
+        """
+        Args:
+            x: Input tensor of shape (B, N, D) where N is sequence length
+            
+        Returns:
+            Pooled tensor of shape (B, D)
+        """
+        # Clamp p to avoid numerical instability
+        p = self.p.clamp(min=1.0)
+        
+        # GeM pooling: (mean(x^p))^(1/p)
+        return (x.clamp(min=self.eps).pow(p).mean(dim=1)).pow(1.0 / p)
 
 
 class ProcessEncoder(nn.Module):
@@ -174,25 +213,32 @@ class DummyResultEncoder(nn.Module):
 
 
 class RobustResultEncoder(nn.Module):
-    def __init__(self, output_dim=512): # Note: Updated output_dim to 512 to match your config
+    def __init__(self, output_dim=512, input_dim=1280): # Updated for DINOv3-vit-h/16+ (1280-dim)
         super().__init__()
         
-        # 1. Independent Norms (Keep this from Plan E)
-        self.norm_l12 = nn.LayerNorm(768)
-        self.norm_l8 = nn.LayerNorm(768)
+        # 1. Independent Norms (Updated for DINOv3's 1280-dim output)
+        # Layer 21: Use both Mean and GeM pooling for texture details
+        self.norm_l21_mean = nn.LayerNorm(input_dim)  # Layer 21 Mean: general texture
+        self.norm_l21_gem = nn.LayerNorm(input_dim)   # Layer 21 GeM: learnable-weighted texture features
+        self.norm_l32 = nn.LayerNorm(input_dim)       # Layer 32: deepest semantic features
+        
+        # GeM Pooling for Layer 21 (learnable parameter p)
+        self.gem_pooling = GeMPooling(p=6.0)  # Initialize p=6.0 (balance between stability and max-like behavior)
         
         # 2. Adaptive Gating Network (The Upgrade)
-        # Input: 1536 (768*2) -> Output: 1536 weights
+        # Input: input_dim*3 (1280*3 = 3840) -> Output: 3840 weights
+        # Now includes L21_mean + L21_gem + L32
+        concat_dim = input_dim * 3
         self.gate_net = nn.Sequential(
-            nn.Linear(1536, 384), # Bottleneck for efficiency
+            nn.Linear(concat_dim, concat_dim // 4),  # Bottleneck for efficiency
             nn.SiLU(),
-            nn.Linear(384, 1536),
+            nn.Linear(concat_dim // 4, concat_dim),
             nn.Sigmoid()
         )
         
         # 3. Final Projector
         self.projector = nn.Sequential(
-            nn.Linear(1536, 512),
+            nn.Linear(concat_dim, 512),
             nn.LayerNorm(512),
             nn.SiLU(), # Swish/SiLU is better than ReLU for modern networks
             # Removed Dropout here to prevent underfitting
@@ -201,21 +247,27 @@ class RobustResultEncoder(nn.Module):
         )
 
     def forward(self, dino_output):
-        # Extract features (Same as Plan E)
-        feat_l12 = dino_output['hidden_states'][11] 
-        z_l12 = feat_l12.mean(dim=1) 
-        feat_l8 = dino_output['hidden_states'][7]
-        z_l8 = feat_l8.max(dim=1)[0] 
-
-        # Normalize
-        z_l12 = self.norm_l12(z_l12)
-        z_l8 = self.norm_l8(z_l8)
+        # Extract features from Layer 21 (mid-level) and Layer 32 (deepest)
+        feat_l21 = dino_output['hidden_states'][20]  # Layer 21 (index 20)
         
-        # Concat
-        combined = torch.cat([z_l12, z_l8], dim=-1) # (B, 1536)
+        # Layer 21: Use BOTH Mean and GeM pooling to capture different texture aspects
+        z_l21_mean = feat_l21.mean(dim=1)  # Mean pool: general texture patterns
+        z_l21_gem = self.gem_pooling(feat_l21)  # GeM pool: learnable-weighted texture features
+        
+        # Layer 32: Use Mean pooling for deepest semantic features
+        feat_l32 = dino_output['hidden_states'][31]  # Layer 32 (index 31)
+        z_l32 = feat_l32.mean(dim=1)  # Mean pool for deepest semantic features
+
+        # Normalize each component independently
+        z_l21_mean = self.norm_l21_mean(z_l21_mean)
+        z_l21_gem = self.norm_l21_gem(z_l21_gem)
+        z_l32 = self.norm_l32(z_l32)
+        
+        # Concat: L21_mean + L21_gem + L32
+        combined = torch.cat([z_l21_mean, z_l21_gem, z_l32], dim=-1) # (B, 3840)
         
         # --- Adaptive Gating ---
-        gates = self.gate_net(combined) # (B, 1536)
+        gates = self.gate_net(combined) # (B, 3840)
         gated_combined = combined * gates # Element-wise modulation
         
         # Project

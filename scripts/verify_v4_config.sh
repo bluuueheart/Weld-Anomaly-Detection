@@ -1,12 +1,12 @@
 #!/bin/bash
-# 验证V4配置是否正确应用
+# 楠岃瘉V4閰嶇疆鏄惁姝ｇ‘搴旂敤
 
 echo "=========================================="
-echo "验证 V4 配置"
+echo "楠岃瘉 V4 閰嶇疆"
 echo "=========================================="
 echo ""
 
-echo "检查 train_config.py..."
+echo "妫€鏌?train_config.py..."
 python -c "
 from configs.train_config import TRAIN_CONFIG as TC
 checks = {
@@ -20,19 +20,19 @@ checks = {
 
 all_ok = True
 for key, (actual, expected) in checks.items():
-    status = '✓' if actual == expected else '✗'
-    print(f'{status} {key}: {actual} (期望: {expected})')
+    status = '鉁? if actual == expected else '鉁?
+    print(f'{status} {key}: {actual} (鏈熸湜: {expected})')
     if actual != expected:
         all_ok = False
 
 if all_ok:
-    print('\n✅ 所有配置正确!')
+    print('\n鉁?鎵€鏈夐厤缃纭?')
 else:
-    print('\n❌ 配置不匹配，请检查 configs/train_config.py')
+    print('\n鉂?閰嶇疆涓嶅尮閰嶏紝璇锋鏌?configs/train_config.py')
 "
 
 echo ""
-echo "检查 train.py (MixUp函数是否存在)..."
+echo "妫€鏌?train.py (MixUp鍑芥暟鏄惁瀛樺湪)..."
 python -c "
 import inspect
 from src.train import Trainer
@@ -40,12 +40,12 @@ from src.train import Trainer
 if hasattr(Trainer, '_mixup_features'):
     sig = inspect.signature(Trainer._mixup_features)
     params = list(sig.parameters.keys())
-    print(f'✓ Trainer._mixup_features 存在，参数: {params}')
+    print(f'鉁?Trainer._mixup_features 瀛樺湪锛屽弬鏁? {params}')
 else:
-    print('✗ Trainer._mixup_features 不存在')
+    print('鉁?Trainer._mixup_features 涓嶅瓨鍦?)
 "
 
 echo ""
 echo "=========================================="
-echo "验证完成"
+echo "楠岃瘉瀹屾垚"
 echo "=========================================="

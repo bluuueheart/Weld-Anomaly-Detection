@@ -51,9 +51,9 @@
 
 ### **4. 评估指标与方法 (Evaluation Metrics & Method)**
 
-这是确保结果可比性的核心。
+需要image/sensor/fusion（若有多个模态）的mean AUC和每个defect type AUC。若无多个模态，直接report该模态的mean AUC和每个defect type AUC。
 
-*   **统一使用 AUC**: 这是论文的核心指标，也最适合异常检测任务。
+*   **统一使用 AUC**:
 *   **统一帧级分数聚合方法**:
     *   **音频**: 使用**期望值 (Expected Value)** 来聚合帧级分数。
     *   **视频**: 使用**“Max over 2s-MA”** 方法来聚合帧级分数。
@@ -160,11 +160,11 @@ WELD_DATA_PATH=/your/path bash baselines/M3DM/train.sh
 
 ### 待服务器验证项
 
-- [ ] 训练集能否正常加载（期望：576个Good样本）
-- [ ] 特征提取是否成功
-- [ ] 内存使用是否在可接受范围
-- [ ] 测试集评估能否正常运行
-- [ ] AUC指标计算是否符合预期
+- [x] 训练集能否正常加载（期望：576个Good样本）
+- [x] 特征提取是否成功
+- [x] 内存使用是否在可接受范围
+- [x] 测试集评估能否正常运行
+- [x] AUC指标计算是否符合预期
 
 ### 技术要点
 
@@ -177,85 +177,153 @@ WELD_DATA_PATH=/your/path bash baselines/M3DM/train.sh
 
 ---
 
+## M3DM Evaluate修复记录（2025-12-13）
+
+### 问题诊断
+
+**报错**: `AttributeError: 'TripleFeatures' object has no attribute 'categories'`
+
+**根本原因**:
+1. `load_state()` 方法未重新初始化跟踪列表（`categories`, `image_preds`等）
+2. PyTorch的 `nn.Module.__getattr__` 机制无法找到普通Python属性
+3. 决策层模型（`detect_fuser`和`seg_fuser`）未在评估时加载
+
+### 实施修复
+
+#### 1. 完善状态加载逻辑
+- **修改文件**: `feature_extractors/features.py`
+- **修改内容**: `load_state()` 方法新增跟踪列表初始化
+- **修复行数**: +9行
+
+#### 2. 评估时加载融合模型
+- **修改文件**: `weld_m3dm_runner.py` - `evaluate()` 方法
+- **修改内容**: 加载 `detect_fuser` 和 `seg_fuser` 模型
+- **修复行数**: +15行
+
+#### 3. 训练时保存融合模型
+- **修改文件**: `weld_m3dm_runner.py` - `fit()` 方法
+- **修改内容**: 保存分割模型 `seg_fuser`（原本只保存了检测模型）
+- **修复行数**: +8行
+
+#### 4. 修复字典迭代bug
+- **修改文件**: `weld_m3dm_runner.py` - line 176
+- **错误**: `self.methods.values()` 无法解包为 `(key, value)`
+- **正确**: `self.methods.items()`
+
+### 代码修改统计
+
+| 项目 | 数量 | 说明 |
+|------|------|------|
+| 修改文件 | 2个 | features.py, weld_m3dm_runner.py |
+| 新增代码 | +35行 | 状态初始化、模型加载与保存 |
+| 修复bug | 1处 | 字典迭代语法错误 |
+| 遵循原则 | ✅ | 最小修改、保持风格、SOLID原则 |
+
+### 验证指南
+
+**快速测试**:
+```bash
+# 1. 检查checkpoint
+ls -lh /root/autodl-tmp/save/weld_*
+# 预期：feature_extraction.pkl + decision_model.pkl + segmentation_model.pkl
+
+# 2. 运行评估
+bash baselines/M3DM/evaluate.sh
+
+# 3. 预期输出：
+# ✓ Loaded decision model: /root/autodl-tmp/save/weld_DINO+Point_MAE+Fusion_decision_model.pkl
+# ✓ Loaded segmentation model: /root/autodl-tmp/save/weld_DINO+Point_MAE+Fusion_segmentation_model.pkl
+# Extracting test features for weld: 100%|████████| 1732/1732
+# Class: weld, Image ROCAUC: 0.xxx, Pixel ROCAUC: 0.xxx, AU-PRO: 0.xxx
+```
+
+### 技术要点
+
+1. **PyTorch模块属性**: 普通Python属性必须在对象生命周期内显式初始化
+2. **Checkpoint设计**: 分离持久化状态（特征库）与瞬态状态（跟踪列表）
+3. **Late Fusion模型**: `detect_fuser`（图像级）和`seg_fuser`（像素级）需单独保存
+
+详细说明请参阅：`baselines/M3DM/README.md` - "评估阶段AttributeError修复"章节
+
+---
+
+## M3DM Device Mismatch 修复完成（2025-12-15）
+
+### 已完成修复
+✅ **修复6**: 设备不匹配错误 - 统计量作为Python float标量保存/加载
+- 修改文件: `feature_extractors/features.py`
+  - `get_state()`: 使用`.item()`将统计量转为Python float
+  - `load_state()`: 保持统计量为Python float（不转为tensor）
+- 原理: PyTorch对Python标量自动设备广播，无需手动迁移
+- 优势: 零设备开销、内存高效、checkpoint更小、设备无关
+
+### 需要服务器执行的操作
+
+**⚠️ 必须重新训练生成新checkpoint** (因为修改了保存格式)
+
+**选项1 - 使用自动化脚本** (推荐):
+```bash
+bash baselines/M3DM/retrain_with_new_checkpoint.sh
+```
+此脚本会自动：
+1. 备份旧checkpoint到 `.backup_YYYYMMDD_HHMMSS`
+2. 删除旧的feature/decision/segmentation模型
+3. 运行完整训练生成新checkpoint
+4. 验证新checkpoint是否生成成功
+
+**选项2 - 手动执行**:
+```bash
+# 1. 删除旧checkpoint
+rm -f /root/autodl-tmp/save/weld_feature_extraction.pkl
+rm -f /root/autodl-tmp/save/weld_DINO+Point_MAE+Fusion_decision_model.pkl
+rm -f /root/autodl-tmp/save/weld_DINO+Point_MAE+Fusion_segmentation_model.pkl
+
+# 2. 重新训练
+bash baselines/M3DM/train.sh
+
+# 3. 验证evaluate
+bash baselines/M3DM/evaluate.sh
+```
+
+**预期结果**:
+- 新checkpoint大小约500MB
+- evaluate阶段不再出现 `RuntimeError: device mismatch`
+- 代码可在CPU/CUDA间无缝切换
+
+详细技术说明请参阅: `baselines/M3DM/README.md` - "修复6"章节
+
 TODO:
-1. 仔细阅读baselines\setup.md，理解任务和当前状态，始终遵守下方全局执行要求。
-2. 现在进度：
-==========================================
-Late Fusion Baseline Evaluation
-==========================================
-Command: python baselines/Late_Fusion/evaluate.py     --audio_checkpoint baselines/Late_Fusion/checkpoints/audio_autoencoder_best.pth     --video_checkpoint baselines/Late_Fusion/checkpoints/video_autoencoder_best.pth     --data_root /root/autodl-tmp/Intel_Robotic_Welding_Multimodal_Dataset/raid/intel_robotic_welding_dataset     --manifest configs/manifest.csv     --output_dir baselines/Late_Fusion/results     --device cuda
+1. 仔细阅读baselines\setup.md 理解任务和当前状态，始终遵守下方全局执行要求。
+2. 修复m3dm评估：
+[W pthreadpool-cpp.cc:90] Warning: Leaking Caffe2 thread-pool after fork. (function pthreadpool)
+Extracting test features for weld: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1732/1732 [44:35<00:00,  1.54s/it]
+✓ Test features saved: /root/autodl-tmp/save/weld_test_features.pkl
+  Size: 3565.21 MB
+Class: weld, DINO+Point_MAE+Fusion Image ROCAUC: 0.682, DINO+Point_MAE+Fusion Pixel ROCAUC: 0.642, DINO+Point_MAE+Fusion AU-PRO: 0.328
 
-Loading datasets...
+DINO+Point_MAE+Fusion - Per-Defect-Type AUC:
+============================================================
+  Good                                    : N/A
+  Excessive_Convexity                     : 0.000
+  Undercut                                : 0.000
+  Lack_of_Fusion                          : 0.000
+  Porosity                                : 0.000
+  Spatter                                 : 0.000
+  Burnthrough                             : 0.000
+  Porosity_w_Excessive_Penetration        : 0.000
+  Excessive_Penetration                   : 0.000
+  Crater_Cracks                           : 0.000
+  Warping                                 : 0.000
+  Overlap                                 : 0.000
+============================================================
 
-Loading models...
-  Loaded audio model from baselines/Late_Fusion/checkpoints/audio_autoencoder_best.pth
-    n_bins=8193, bottleneck_dim=48, hidden_channels=1024, num_conv_layers=3
-  Loaded video model from baselines/Late_Fusion/checkpoints/video_autoencoder_best.pth
-    feature_dim=2304, encoder_layers=[2304, 512, 256, 128, 64, 64], decoder_layers=[64, 64, 128, 256, 512, 2304], dropout=0.5
+运行了# 删除旧的test features（包含错误的category）
+rm /root/autodl-tmp/save/weld_test_features.pkl
 
-======================================================================
-EVALUATION
-======================================================================
-
-Evaluating AUDIO model...
-  Training set stats: mean=0.009136, std=0.015215
-  Validation AUC: 0.4959
-  Test AUC: 0.5140
-  Test AUC per class:
-    overall: 0.0000
-    class_1: 0.6064
-    class_2: 0.6024
-    class_3: 0.3119
-    class_4: 0.5957
-    class_5: 0.4954
-    class_6: 0.4420
-    class_7: 0.7241
-    class_8: 0.4665
-    class_9: 0.8337
-    class_10: 0.4863
-    class_11: 0.1619
-
-Evaluating VIDEO model...
-  Training set stats: mean=0.000000, std=0.000000
-  Validation AUC: 0.5000
-  Test AUC: 0.5000
-  Test AUC per class:
-    overall: 0.0000
-    class_1: 0.5000
-    class_2: 0.5000
-    class_3: 0.5000
-    class_4: 0.5000
-    class_5: 0.5000
-    class_6: 0.5000
-    class_7: 0.5000
-    class_8: 0.5000
-    class_9: 0.5000
-    class_10: 0.5000
-    class_11: 0.5000
-
-Evaluating FUSION model...
-  Audio stats: mean=0.009136, std=0.015215
-  Video stats: mean=0.000000, std=0.000000
-  Optimal weights: audio=0.0000, video=1.0000
-  Validation AUC (fused): 0.0000
-Traceback (most recent call last):
-  File "/root/work/baselines/Late_Fusion/evaluate.py", line 519, in <module>
-    main()
-  File "/root/work/baselines/Late_Fusion/evaluate.py", line 479, in main
-    fusion_results = evaluate_fusion(
-  File "/root/work/baselines/Late_Fusion/evaluate.py", line 279, in evaluate_fusion
-    test_auc_fused = roc_auc_score(test_labels, test_fused)
-  File "/root/miniconda3/envs/weld/lib/python3.10/site-packages/sklearn/utils/_param_validation.py", line 218, in wrapper
-    return func(*args, **kwargs)
-  File "/root/miniconda3/envs/weld/lib/python3.10/site-packages/sklearn/metrics/_ranking.py", line 679, in roc_auc_score
-    raise ValueError("multi_class must be in ('ovo', 'ovr')")
-ValueError: multi_class must be in ('ovo', 'ovr')
-
-==========================================
-Evaluation completed
-Results saved to: baselines/Late_Fusion/results
-==========================================
-
+# 重新运行评估
+bash baselines/M3DM/evaluate.sh
+还是如上 category不显示
+   
 ## 全局执行要求：
 （step by step 你自己安排）
 最后汇报需求实现情况，集中中文写在当前baseline的README里面更新，不得有其他文档，不用更新setup.md。

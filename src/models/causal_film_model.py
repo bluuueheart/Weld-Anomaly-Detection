@@ -2,7 +2,7 @@
 Causal-FiLM Model for Unified Multimodal Anomaly Detection.
 
 Implements the complete Causal-FiLM architecture:
-- L0: Frozen feature extractors (V-JEPA, DINOv2, AST)
+- L0: Frozen feature extractors (V-JEPA, DINOv3, AST)
 - L1: FiLM sensor modulation
 - L2: Causal hierarchical encoders (Process + Result)
 - L3: Anti-generalization decoder
@@ -32,13 +32,13 @@ class CausalFiLMModel(nn.Module):
         L0 (Frozen Backbones):
             video -> V-JEPA -> F_video (B, T_v, 1024)
             audio -> AST -> F_audio (B, T_a, 768)
-            images -> DINOv2 -> F_image (B, N, 768)
+            images -> DINOv3-vit-h/16+ -> F_image (B, N, 1280)
             sensor -> raw data (B, T_s, 6)
         
-        Projection to unified D_model=128:
-            F_video -> Linear -> (B, T_v, 128)
-            F_audio -> Linear -> (B, T_a, 128)
-            F_image -> Linear -> (B, N, 128)
+        Projection to unified D_model=512:
+            F_video -> Linear -> (B, T_v, 512)
+            F_audio -> Linear -> (B, T_a, 512)
+            F_image -> Linear -> (B, N, 512)
         
         L1 (FiLM Modulation):
             sensor -> SensorModulator -> gamma, beta (B, 1, 128)
@@ -123,10 +123,10 @@ class CausalFiLMModel(nn.Module):
                 freeze_backbone=True,  # Always frozen
             )
             
-            # Image encoder (DINOv2)
+            # Image encoder (DINOv3)
             self.image_encoder = ImageEncoder(
-                model_name=image_config.get("model_name", "facebook/dinov2-base"),
-                embed_dim=768,
+                model_name=image_config.get("model_name", "/root/work/models/dinov3-vith16plus-pretrain-lvd1689m"),
+                embed_dim=image_config.get("embed_dim", 1280),  # Use config value (1280 for DINOv3-vit-h/16+)
                 num_angles=image_config.get("num_angles", 5),
                 aggregation="none",  # We handle aggregation in ResultEncoder
                 freeze_backbone=True,  # Always frozen
@@ -326,7 +326,7 @@ class CausalFiLMModel(nn.Module):
         return self.output_dim
     
     def freeze_backbones(self):
-        """Freeze all backbone encoders (V-JEPA, AST, DINOv2)."""
+        """Freeze all backbone encoders (V-JEPA, AST, DINOv3)."""
         for param in self.video_encoder.parameters():
             param.requires_grad = False
         for param in self.audio_encoder.parameters():

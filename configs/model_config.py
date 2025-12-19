@@ -2,7 +2,7 @@
 
 # Model paths
 VIDEO_MODEL_PATH = "models/vjepa2-vitl-fpc64-256"
-IMAGE_MODEL_PATH = "models/dinov2-base"
+IMAGE_MODEL_PATH = "/root/work/models/dinov3-vith16plus-pretrain-lvd1689m"
 AUDIO_MODEL_PATH = "models/ast-finetuned-audioset-14-14-0.443"
 
 # Video encoder config
@@ -12,10 +12,10 @@ VIDEO_ENCODER = {
     "freeze_backbone": True,  # Freeze pretrained weights for fine-tuning
 }
 
-# Image encoder config (DINOv2)
+# Image encoder config (DINOv3-vith16plus)
 IMAGE_ENCODER = {
     "model_name": IMAGE_MODEL_PATH,
-    "embed_dim": 768,
+    "embed_dim": 1280,  # DINOv3-vit-h/16+ outputs 1280-dim features
     "num_angles": 5,
     "aggregation": "mean",
     "freeze_backbone": True,  # Freeze pretrained weights for fine-tuning

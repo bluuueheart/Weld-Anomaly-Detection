@@ -1,14 +1,14 @@
 #!/bin/bash
-# 测试日志查找功能
+# 娴嬭瘯鏃ュ織鏌ユ壘鍔熻兘
 
 cd "$(dirname "$0")/.."
 
 echo "=========================================="
-echo "测试日志自动查找功能"
+echo "娴嬭瘯鏃ュ織鑷姩鏌ユ壘鍔熻兘"
 echo "=========================================="
 echo ""
 
-# 创建测试日志文件
+# 鍒涘缓娴嬭瘯鏃ュ織鏂囦欢
 TEST_LOG_DIR="test_outputs/logs"
 mkdir -p "$TEST_LOG_DIR"
 
@@ -27,29 +27,29 @@ cat > "$TEST_LOG_DIR/training_log.json" << 'EOF'
 }
 EOF
 
-echo "✅ 创建测试日志文件: $TEST_LOG_DIR/training_log.json"
+echo "鉁?鍒涘缓娴嬭瘯鏃ュ織鏂囦欢: $TEST_LOG_DIR/training_log.json"
 echo ""
 
-# 测试自动查找
-echo "测试自动查找功能..."
+# 娴嬭瘯鑷姩鏌ユ壘
+echo "娴嬭瘯鑷姩鏌ユ壘鍔熻兘..."
 python -c "
 from scripts.plot_loss import find_log_file
 log_path = find_log_file()
 if log_path:
-    print(f'✅ 找到日志文件: {log_path}')
+    print(f'鉁?鎵惧埌鏃ュ織鏂囦欢: {log_path}')
 else:
-    print('❌ 未找到日志文件')
+    print('鉂?鏈壘鍒版棩蹇楁枃浠?)
 "
 
 echo ""
-echo "测试绘图脚本..."
+echo "娴嬭瘯缁樺浘鑴氭湰..."
 python scripts/plot_loss.py --log "$TEST_LOG_DIR/training_log.json" --output test_outputs
 
 echo ""
-echo "清理测试文件..."
+echo "娓呯悊娴嬭瘯鏂囦欢..."
 rm -rf test_outputs
 
 echo ""
 echo "=========================================="
-echo "测试完成"
+echo "娴嬭瘯瀹屾垚"
 echo "=========================================="

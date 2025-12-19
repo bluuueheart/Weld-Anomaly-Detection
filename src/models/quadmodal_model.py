@@ -3,7 +3,7 @@ Quad-Modal SOTA Model for Welding Anomaly Detection.
 
 Integrates four modality encoders with cross-attention fusion:
 - Video: V-JEPA (in-process monitoring)
-- Image: DINOv2 (post-weld inspection)
+- Image: DINOv3 (post-weld inspection)
 - Audio: AST (acoustic signals)
 - Sensor: Transformer (multi-variate time series)
 """
@@ -96,7 +96,7 @@ class QuadModalSOTAModel(nn.Module):
                 freeze_backbone=video_config.get("freeze_backbone", False),
             )
             self.image_encoder = ImageEncoder(
-                model_name=image_config.get("model_name", "facebook/dinov2-base"),
+                model_name=image_config.get("model_name", "/root/work/models/dinov3-vith16plus-pretrain-lvd1689m"),
                 embed_dim=image_config.get("embed_dim", 768),
                 num_angles=image_config.get("num_angles", 5),
                 aggregation=image_config.get("aggregation", "mean"),

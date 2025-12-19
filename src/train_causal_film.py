@@ -31,7 +31,8 @@ from src.models import create_causal_film_model
 from src.dataset import WeldingDataset
 from src.losses import CausalFILMLoss
 from configs.dataset_config import (
-    DATA_ROOT, MANIFEST_PATH, VIDEO_LENGTH, AUDIO_SAMPLE_RATE, AUDIO_DURATION,
+    DATA_ROOT, MANIFEST_PATH, VIDEO_LENGTH, VIDEO_FRAME_SIZE,
+    AUDIO_SAMPLE_RATE, AUDIO_DURATION,
     SENSOR_LENGTH, IMAGE_SIZE, IMAGE_NUM_ANGLES
 )
 from configs.model_config import *
@@ -107,20 +108,27 @@ class CausalFiLMTrainer:
             "entity": self.config.get("wandb_entity"),
             "name": self.config.get("wandb_name"),
             "config": self.config,
-            "reinit": True
         }
 
         # Priority: 1. CLI arg (in config), 2. Checkpoint
         run_id = self.config.get("wandb_id")
-        if not run_id and self.wandb_id:
+        if run_id:
+            print(f"  📋 Using WandB ID from CLI: {run_id}")
+        elif self.wandb_id:
             run_id = self.wandb_id
+            print(f"  📋 Using WandB ID from checkpoint: {run_id}")
+        else:
+            print(f"  ℹ️  No WandB ID found (neither in CLI nor checkpoint)")
 
         if run_id:
-            print(f"  Resuming WandB run: {run_id}")
+            print(f"  🔄 Resuming WandB run with ID: {run_id}")
             init_kwargs["id"] = run_id
-            init_kwargs["resume"] = "allow"
+            init_kwargs["resume"] = "must"  # Force resume instead of allow
+        else:
+            print(f"  🆕 Starting new WandB run")
 
         wandb.init(**init_kwargs)
+        print(f"  ✅ WandB initialized: {wandb.run.name} (ID: {wandb.run.id})")
     
     def _setup_model(self):
         """Setup Causal-FiLM model."""
@@ -167,6 +175,7 @@ class CausalFiLMTrainer:
             manifest_path=MANIFEST_PATH,
             split='train',
             video_length=VIDEO_LENGTH,
+            frame_size=VIDEO_FRAME_SIZE,
             audio_sample_rate=AUDIO_SAMPLE_RATE,
             audio_duration=AUDIO_DURATION,
             sensor_length=SENSOR_LENGTH,
@@ -236,6 +245,7 @@ class CausalFiLMTrainer:
             manifest_path=MANIFEST_PATH,
             split='val',
             video_length=VIDEO_LENGTH,
+            frame_size=VIDEO_FRAME_SIZE,
             audio_sample_rate=AUDIO_SAMPLE_RATE,
             audio_duration=AUDIO_DURATION,
             sensor_length=SENSOR_LENGTH,
@@ -298,11 +308,13 @@ class CausalFiLMTrainer:
         
         lambda_text = self.config.get("lambda_text", 0.1)
         lambda_l1 = self.config.get("lambda_l1", 10.0)
+        lambda_gram = self.config.get("lambda_gram", 1.0)
         top_k_ratio = self.config.get("top_k_ratio", 1.0)
         
         self.criterion = CausalFILMLoss(
             lambda_text=lambda_text,
             lambda_l1=lambda_l1,
+            lambda_gram=lambda_gram,
             top_k_ratio=top_k_ratio,
             clip_model_name="ViT-B/32",
             text_prompt="a normal weld",
@@ -313,6 +325,7 @@ class CausalFiLMTrainer:
         print(f"  Loss: Causal-FiLM Loss")
         print(f"  Lambda (text): {lambda_text}")
         print(f"  Lambda (L1): {lambda_l1}")
+        print(f"  Lambda (Gram): {lambda_gram}")
         print(f"  Top-K Ratio: {top_k_ratio}")
         print()
     
@@ -597,8 +610,7 @@ class CausalFiLMTrainer:
             # Step scheduler
             self.scheduler.step()
             
-            # Save latest checkpoint
-            self._save_checkpoint(epoch, is_best=False)
+            # Note: Only best model is saved (no periodic checkpoints to save disk space)
             
             print()
         
@@ -624,7 +636,10 @@ class CausalFiLMTrainer:
             wandb.finish()
     
     def _save_checkpoint(self, epoch: int, is_best: bool = False):
-        """Save model checkpoint."""
+        """Save model checkpoint (only saves best model)."""
+        if not is_best:
+            return  # Only save best model to conserve disk space
+        
         checkpoint = {
             "epoch": epoch,
             "global_step": self.global_step,
@@ -637,23 +652,19 @@ class CausalFiLMTrainer:
             "wandb_id": wandb.run.id if wandb.run else None,
         }
         
-        if is_best:
-            path = self.checkpoint_dir / "best_model.pth"
-            torch.save(checkpoint, path)
-        else:
-            path = self.checkpoint_dir / "latest_model.pth"
-            torch.save(checkpoint, path)
+        path = self.checkpoint_dir / "best_model.pth"
+        torch.save(checkpoint, path)
+        print(f"  💾  Saved best model to: {path}")
     
     def resume_checkpoint(self, checkpoint_path: str):
-        """Resume training from checkpoint."""
-        if checkpoint_path == "latest":
-            checkpoint_path = self.checkpoint_dir / "latest_model.pth"
-        elif checkpoint_path == "best":
+        """Resume training from checkpoint (only best model is available)."""
+        if checkpoint_path == "latest" or checkpoint_path == "best":
             checkpoint_path = self.checkpoint_dir / "best_model.pth"
         
         checkpoint_path = Path(checkpoint_path)
         if not checkpoint_path.exists():
             print(f"  ⚠️  Checkpoint not found: {checkpoint_path}")
+            print(f"      Note: Only best_model.pth is saved to conserve disk space")
             return
         
         print(f"  Loading checkpoint from {checkpoint_path}...")
@@ -680,6 +691,10 @@ class CausalFiLMTrainer:
             self.val_log = checkpoint["val_log"]
         
         self.wandb_id = checkpoint.get("wandb_id")
+        if self.wandb_id:
+            print(f"  📋 Restored WandB ID from checkpoint: {self.wandb_id}")
+        else:
+            print(f"  ⚠️  No WandB ID found in checkpoint")
             
         print(f"  ✅ Resumed from epoch {self.current_epoch} (Best metric: {self.best_metric:.4f})")
 

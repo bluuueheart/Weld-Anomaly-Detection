@@ -5,14 +5,14 @@ TRAIN_CONFIG = {
     # Optimization
     "batch_size": 32,  # Increased for SupConLoss (need more positive pairs per batch)
     "num_epochs": 100,
-    "learning_rate": 5e-5,  # Increased for faster convergence (target >0.9 AUROC in 20 epochs)
-    "weight_decay": 1e-3,  # Reduced from 1e-2 to allow faster feature adaptation
+    "learning_rate": 2e-5,
+    "weight_decay": 1.5e-2, 
     "optimizer": "adamw",  # "adam", "adamw", "sgd"
     
     # Learning rate schedule (with linear warmup)
     "lr_scheduler": "cosine_warmup",  # "cosine", "cosine_warmup", "step", "plateau", "none"
-    "warmup_epochs": 5,  # Increased to 5 for better stability
-    "warmup_start_lr": 1e-6,  # Higher start LR
+    "warmup_epochs": 3,  # Increased to 5 for better stability
+    "warmup_start_lr": 1e-7,  # Higher start LR
     "min_lr": 1e-7,  # Lower floor to allow aggressive decay
     
     # Loss
@@ -25,6 +25,7 @@ TRAIN_CONFIG = {
     # Causal-FiLM specific loss parameters
     "lambda_text": 0.01,   # Kept at 0.01 to allow reconstruction freedom
     "lambda_l1": 1.0,    # Weight for L1 reconstruction loss
+    "lambda_gram": 1.0,  # Weight for Gram Matrix loss (texture/style correlation)
     "top_k_ratio": 0.5,   # Ratio of top-k features for Hard Feature Mining (1.0 = all features)
     
     # Regularization via data augmentation
@@ -36,7 +37,11 @@ TRAIN_CONFIG = {
     # Training strategy
     "freeze_encoders_epochs": 0,  # Freeze encoders for first N epochs (0 = no freeze)
     "gradient_clip": 0.5,  # Reduced from 1.0 (tighter gradient control)
-    "early_stopping_patience": 8,  # Aggressive early stop (catch best at epoch 4-10)
+    "early_stopping_patience": 20,  # Aggressive early stop (catch best at epoch 4-10)
+    
+    # Model EMA (Exponential Moving Average)
+    "use_ema": True,  # Enable EMA for more stable training
+    "ema_decay": 0.9999,  # EMA decay rate (higher = slower update, more stable)
     
     # Data
     "num_workers": 4,

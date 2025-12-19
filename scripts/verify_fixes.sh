@@ -1,56 +1,56 @@
 #!/bin/bash
-# 验证所有修复是否正确应用
+# 楠岃瘉鎵€鏈変慨澶嶆槸鍚︽纭簲鐢?
 
 echo "======================================================================"
-echo "代码修复验证"
+echo "浠ｇ爜淇楠岃瘉"
 echo "======================================================================"
 echo ""
 
-# 1. 检查dataset.py中的标签生成
-echo "✓ 检查 dataset.py 标签生成逻辑..."
+# 1. 妫€鏌ataset.py涓殑鏍囩鐢熸垚
+echo "鉁?妫€鏌?dataset.py 鏍囩鐢熸垚閫昏緫..."
 if grep -q "num_classes = 6" src/dataset.py && grep -q "random.shuffle" src/dataset.py; then
-    echo "  ✅ 标签生成已修复（6个类别，随机打乱）"
+    echo "  鉁?鏍囩鐢熸垚宸蹭慨澶嶏紙6涓被鍒紝闅忔満鎵撲贡锛?
 else
-    echo "  ❌ 标签生成未正确修复"
+    echo "  鉂?鏍囩鐢熸垚鏈纭慨澶?
     exit 1
 fi
 
-# 2. 检查没有重复的import random
-echo "✓ 检查 dataset.py 中没有重复 import random..."
+# 2. 妫€鏌ユ病鏈夐噸澶嶇殑import random
+echo "鉁?妫€鏌?dataset.py 涓病鏈夐噸澶?import random..."
 count=$(grep -c "^import random" src/dataset.py)
 if [ "$count" -eq 1 ]; then
-    echo "  ✅ random只在模块顶部导入一次"
+    echo "  鉁?random鍙湪妯″潡椤堕儴瀵煎叆涓€娆?
 else
-    echo "  ❌ 发现重复的 import random"
+    echo "  鉂?鍙戠幇閲嶅鐨?import random"
     exit 1
 fi
 
-# 3. 检查train.py中的CUDA默认配置
-echo "✓ 检查 train.py CUDA默认配置..."
+# 3. 妫€鏌rain.py涓殑CUDA榛樿閰嶇疆
+echo "鉁?妫€鏌?train.py CUDA榛樿閰嶇疆..."
 if grep -q "config\['device'\] = 'cuda' if torch.cuda.is_available()" src/train.py; then
-    echo "  ✅ 默认使用CUDA（如果可用）"
+    echo "  鉁?榛樿浣跨敤CUDA锛堝鏋滃彲鐢級"
 else
-    echo "  ❌ CUDA配置未正确设置"
+    echo "  鉂?CUDA閰嶇疆鏈纭缃?
     exit 1
 fi
 
-# 4. 检查测试文件存在
-echo "✓ 检查测试文件..."
+# 4. 妫€鏌ユ祴璇曟枃浠跺瓨鍦?
+echo "鉁?妫€鏌ユ祴璇曟枃浠?.."
 if [ -f "tests/test_loss_and_labels.py" ]; then
-    echo "  ✅ 测试文件存在"
+    echo "  鉁?娴嬭瘯鏂囦欢瀛樺湪"
 else
-    echo "  ❌ 测试文件缺失"
+    echo "  鉂?娴嬭瘯鏂囦欢缂哄け"
     exit 1
 fi
 
-# 5. 检查文档文件
-echo "✓ 检查文档文件..."
+# 5. 妫€鏌ユ枃妗ｆ枃浠?
+echo "鉁?妫€鏌ユ枃妗ｆ枃浠?.."
 docs_ok=true
 for doc in "docs/LOSS_FIX.md" "docs/SERVER_TESTING.md" "docs/FIX_SUMMARY.md"; do
     if [ -f "$doc" ]; then
-        echo "  ✅ $doc 存在"
+        echo "  鉁?$doc 瀛樺湪"
     else
-        echo "  ❌ $doc 缺失"
+        echo "  鉂?$doc 缂哄け"
         docs_ok=false
     fi
 done
@@ -61,11 +61,11 @@ fi
 
 echo ""
 echo "======================================================================"
-echo "✅ 所有修复验证通过！"
+echo "鉁?鎵€鏈変慨澶嶉獙璇侀€氳繃锛?
 echo "======================================================================"
 echo ""
-echo "下一步："
-echo "  1. 在服务器上运行: bash scripts/test_server.sh"
-echo "  2. 或手动测试: python tests/test_loss_and_labels.py"
-echo "  3. 快速训练: python src/train.py --quick-test --debug"
+echo "涓嬩竴姝ワ細"
+echo "  1. 鍦ㄦ湇鍔″櫒涓婅繍琛? bash scripts/test_server.sh"
+echo "  2. 鎴栨墜鍔ㄦ祴璇? python tests/test_loss_and_labels.py"
+echo "  3. 蹇€熻缁? python src/train.py --quick-test --debug"
 echo ""

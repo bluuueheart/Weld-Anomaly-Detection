@@ -277,7 +277,8 @@ class WeldingDataset(Dataset):
             "post_weld_images": images,
             "audio": audio,
             "sensor": sensor,
-            "label": label,
+            "label": 0 if label == 0 else 1,  # Binary label (0=good, 1=defective)
+            "class_label": label,  # Multiclass label (0-11)
             "meta": {"id": sid},
         }
 
@@ -353,7 +354,8 @@ class WeldingDataset(Dataset):
             "post_weld_images": images,
             "audio": audio,
             "sensor": sensor,
-            "label": label,
+            "label": 0 if label == 0 else 1,  # Binary label (0=good, 1=defective)
+            "class_label": label,  # Multiclass label (0-11)
             "meta": {"id": sid},
         }
 

@@ -11,7 +11,7 @@ python tests/test_dataset_labels.py
 
 if [ $? -ne 0 ]; then
     echo ""
-    echo "❌ Dataset label check failed! Fix data loading before training."
+    echo "鉂?Dataset label check failed! Fix data loading before training."
     exit 1
 fi
 
@@ -37,12 +37,12 @@ if [ $? -eq 0 ]; then
     python src/train.py --quick-test --debug
     
     echo ""
-    echo "✅ All tests completed successfully!"
+    echo "鉁?All tests completed successfully!"
     echo ""
     echo "To run full training on server (real data):"
     echo "  python src/train.py --batch-size 16 --num-epochs 100"
 else
     echo ""
-    echo "❌ Loss and label tests failed!"
+    echo "鉂?Loss and label tests failed!"
     exit 1
 fi

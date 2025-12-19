@@ -191,6 +191,22 @@ def compute_auc_per_class(
     Returns:
         Dictionary mapping class name to AUC
     """
+    # Class label to name mapping (from dataset_config.py)
+    CLASS_NAMES = {
+        0: "Good",
+        1: "Excessive_Convexity",
+        2: "Undercut",
+        3: "Lack_of_Fusion",
+        4: "Porosity_w_Excessive_Penetration",
+        5: "Porosity",
+        6: "Spatter",
+        7: "Burnthrough",
+        8: "Excessive_Penetration",
+        9: "Crater_Cracks",
+        10: "Warping",
+        11: "Overlap",
+    }
+    
     results = {}
     
     # Overall AUC
@@ -200,19 +216,21 @@ def compute_auc_per_class(
     except ValueError:
         results['overall'] = 0.0
     
-    # Per-class AUC (each defect vs. good)
-    unique_classes = np.unique(class_labels)
+    # Per-class AUC (each defect vs. good) - compute for all 12 classes in order
     good_mask = (labels == 0)
     
-    for cls in unique_classes:
-        if cls == 0:  # Skip "good" class
+    for cls in range(12):  # 0-11 for 12 classes
+        class_name = CLASS_NAMES.get(cls, f'class_{cls}')
+        
+        if cls == 0:  # Good class - special handling
+            results[class_name] = None  # Not applicable
             continue
         
         # Create binary labels: good (0) vs. this defect (1)
         cls_mask = (class_labels == cls)
         binary_mask = good_mask | cls_mask
         
-        if binary_mask.sum() < 2:
+        if binary_mask.sum() < 2 or cls_mask.sum() == 0:
             continue
         
         cls_scores = scores[binary_mask]
@@ -220,9 +238,9 @@ def compute_auc_per_class(
         
         try:
             auc = roc_auc_score(cls_labels, cls_scores)
-            results[f'class_{cls}'] = auc
+            results[class_name] = auc
         except ValueError:
-            results[f'class_{cls}'] = 0.0
+            results[class_name] = 0.0
     
     return results
 

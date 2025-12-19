@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# 检查 StratifiedBatchSampler 是否正确工作
+# 妫€鏌?StratifiedBatchSampler 鏄惁姝ｇ‘宸ヤ綔
 
 echo "=================================================="
-echo "检查 StratifiedBatchSampler"
+echo "妫€鏌?StratifiedBatchSampler"
 echo "=================================================="
 
 python scripts/check_sampler.py
 
 echo ""
-echo "如果看到 ❌ 错误，说明采样器没有正确混合类别"
-echo "请检查 src/samplers.py 中的实现"
+echo "濡傛灉鐪嬪埌 鉂?閿欒锛岃鏄庨噰鏍峰櫒娌℃湁姝ｇ‘娣峰悎绫诲埆"
+echo "璇锋鏌?src/samplers.py 涓殑瀹炵幇"

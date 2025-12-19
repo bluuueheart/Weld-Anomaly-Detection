@@ -292,30 +292,61 @@ class CLIPTextLoss(nn.Module):
         return loss
 
 
+def compute_gram_matrix(features: torch.Tensor) -> torch.Tensor:
+    """
+    Compute Gram Matrix for style representation.
+    
+    Gram Matrix captures the correlations between different feature dimensions,
+    which is useful for capturing texture/style patterns in anomaly detection.
+    
+    Args:
+        features: Input features of shape (B, D)
+        
+    Returns:
+        Gram matrix of shape (B, D, D)
+    """
+    B, D = features.shape
+    # Reshape to (B, D, 1) for batch matrix multiplication
+    features = features.unsqueeze(2)  # (B, D, 1)
+    features_t = features.transpose(1, 2)  # (B, 1, D)
+    
+    # Compute Gram matrix: G = F * F^T
+    gram = torch.bmm(features, features_t)  # (B, D, D)
+    
+    # Normalize by feature dimension
+    gram = gram / D
+    
+    return gram
+
+
 class CausalFILMLoss(nn.Module):
     """
     Combined loss for Causal-FiLM model.
     
-    L_total = L_recon + λ * L_text
+    L_total = L_recon + λ_style * L_style + λ_text * L_text
     
     Where:
-        - L_recon: Reconstruction loss (cosine distance)
+        - L_recon: Reconstruction loss (cosine distance + L1)
+        - L_style: Gram Matrix loss (captures feature correlations)
         - L_text: CLIP text constraint loss
-        - λ: Weighting parameter (default: 0.1)
+        - λ_style, λ_text: Weighting parameters
     
     Args:
         lambda_text: Weight for CLIP text loss (default: 0.1)
         lambda_l1: Weight for L1 reconstruction loss (default: 10.0)
+        lambda_gram: Weight for Gram Matrix loss (default: 1.0)
         top_k_ratio: Ratio of top-k features for Hard Feature Mining (default: 1.0)
         clip_model_name: CLIP model name (default: "ViT-B/32")
         text_prompt: Text prompt for normal class (default: "a normal weld")
         device: Device for CLIP model
+        d_model: Feature dimension (default: 512)
     """
     
     def __init__(
         self,
         lambda_text: float = 0.1,
         lambda_l1: float = 10.0,
+        lambda_gram: float = 1.0,
         top_k_ratio: float = 1.0,
         clip_model_name: str = "ViT-B/32",
         text_prompt: str = "a normal weld",
@@ -326,6 +357,7 @@ class CausalFILMLoss(nn.Module):
         
         self.lambda_text = lambda_text
         self.lambda_l1 = lambda_l1
+        self.lambda_gram = lambda_gram
         self.top_k_ratio = top_k_ratio
         
         # Reconstruction loss
@@ -375,17 +407,31 @@ class CausalFILMLoss(nn.Module):
             # Standard Mean L1 (using Smooth L1 for stability)
             loss_l1 = F.smooth_l1_loss(Z_result, Z_result_pred, beta=0.1)
         
-        # CLIP text loss
+        # 3. Gram Matrix Loss (Style/Texture Correlation)
+        # Captures the correlations between feature dimensions
+        gram_result = compute_gram_matrix(Z_result)  # (B, D, D)
+        gram_pred = compute_gram_matrix(Z_result_pred)  # (B, D, D)
+        
+        # Frobenius norm: ||G(Z_result) - G(Z_pred)||_F
+        loss_gram = F.mse_loss(gram_pred, gram_result)
+        
+        # 4. CLIP text loss
         loss_clip_text = self.clip_text_loss(Z_result_pred)
         
         # Total loss
-        # L_total = loss_cos + lambda_l1 * loss_l1 + lambda_text * L_clip
-        total_loss = loss_cos + self.lambda_l1 * loss_l1 + self.lambda_text * loss_clip_text
+        # L_total = loss_cos + lambda_l1 * loss_l1 + lambda_gram * loss_gram + lambda_text * L_clip
+        total_loss = (
+            loss_cos 
+            + self.lambda_l1 * loss_l1 
+            + self.lambda_gram * loss_gram 
+            + self.lambda_text * loss_clip_text
+        )
         
         loss_dict = {
             'total': total_loss,
             'recon_cos': loss_cos.item(),
             'recon_l1': loss_l1.item(),
+            'gram': loss_gram.item(),
             'clip_text': loss_clip_text.item(),
         }
         

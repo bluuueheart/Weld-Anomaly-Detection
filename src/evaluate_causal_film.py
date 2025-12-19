@@ -43,6 +43,76 @@ from configs.model_config import *
 from configs.train_config import OUTPUT_DIR
 
 
+ORDERED_CLASSES = [
+    "Good",
+    "Excessive_Convexity",
+    "Undercut",
+    "Lack_of_Fusion",
+    "Porosity",
+    "Spatter",
+    "Burnthrough",
+    "Porosity_w_Excessive_Penetration",
+    "Excessive_Penetration",
+    "Crater_Cracks",
+    "Warping",
+    "Overlap",
+]
+
+
+LABEL_TO_DISPLAY = {
+    0: "Good",
+    1: "Excessive_Convexity",
+    2: "Undercut",
+    3: "Lack_of_Fusion",
+    4: "Porosity_w_Excessive_Penetration",
+    5: "Porosity",
+    6: "Spatter",
+    7: "Burnthrough",
+    8: "Excessive_Penetration",
+    9: "Crater_Cracks",
+    10: "Warping",
+    11: "Overlap",
+}
+
+
+def f1_score_max(labels: np.ndarray, scores: np.ndarray) -> float:
+    precs, recs, _ = precision_recall_curve(labels, scores)
+    f1s = 2 * precs * recs / (precs + recs + 1e-7)
+    return float(np.max(f1s)) if f1s.size else 0.0
+
+
+def compute_per_defect_auroc(scores: np.ndarray, raw_labels: np.ndarray) -> dict:
+    per = {}
+    for name in ORDERED_CLASSES:
+        if name == "Good":
+            per[name] = None
+            continue
+
+        cls_id = None
+        for k, v in LABEL_TO_DISPLAY.items():
+            if v == name:
+                cls_id = k
+                break
+
+        if cls_id is None:
+            per[name] = 0.0
+            continue
+
+        mask = (raw_labels == 0) | (raw_labels == cls_id)
+        if int((raw_labels == cls_id).sum()) == 0 or int(mask.sum()) < 2:
+            per[name] = 0.0
+            continue
+
+        y = (raw_labels[mask] != 0).astype(int)
+        s = scores[mask]
+        if len(np.unique(y)) < 2:
+            per[name] = 0.0
+            continue
+
+        per[name] = float(roc_auc_score(y, s))
+    return per
+
+
 class NumpyEncoder(json.JSONEncoder):
     """Custom encoder for NumPy data types."""
     def default(self, obj):
@@ -63,6 +133,7 @@ class CausalFiLMEvaluator:
         checkpoint_path: str,
         use_dummy: bool = False,
         device: str = "cuda",
+        verbose: bool = False,
     ):
         """
         Initialize evaluator.
@@ -75,15 +146,17 @@ class CausalFiLMEvaluator:
         self.checkpoint_path = checkpoint_path
         self.use_dummy = use_dummy
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.verbose = bool(verbose)
         
         # Load model
         self._load_model()
     
     def _load_model(self):
         """Load model from checkpoint."""
-        print("=" * 70)
-        print("LOADING CAUSAL-FILM MODEL")
-        print("=" * 70)
+        if self.verbose:
+            print("=" * 70)
+            print("LOADING CAUSAL-FILM MODEL")
+            print("=" * 70)
         
         # Create model
         model_config = {
@@ -100,12 +173,12 @@ class CausalFiLMEvaluator:
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.model = self.model.to(self.device)
         self.model.eval()
-        
-        print(f"  Checkpoint: {self.checkpoint_path}")
-        print(f"  Epoch: {checkpoint.get('epoch', 'N/A')}")
-        print(f"  Best Metric: {checkpoint.get('best_metric', 'N/A')}")
-        print(f"  Device: {self.device}")
-        print()
+        if self.verbose:
+            print(f"  Checkpoint: {self.checkpoint_path}")
+            print(f"  Epoch: {checkpoint.get('epoch', 'N/A')}")
+            print(f"  Best Metric: {checkpoint.get('best_metric', 'N/A')}")
+            print(f"  Device: {self.device}")
+            print()
     
     @torch.no_grad()
     def extract_anomaly_scores_and_maps(self, dataloader: DataLoader):
@@ -124,12 +197,12 @@ class CausalFiLMEvaluator:
             raw_labels: Original class labels (N,)
             anomaly_maps: List of pixel-level anomaly maps (for P-AUPRO)
         """
-        print("Extracting anomaly scores and maps...")
-        
+        if self.verbose:
+            print("Extracting anomaly scores...")
+
         all_scores = []
         all_labels = []
         all_raw_labels = []
-        all_anomaly_maps = []
         
         for batch_idx, batch in enumerate(dataloader):
             # Move to device
@@ -137,42 +210,16 @@ class CausalFiLMEvaluator:
                 if isinstance(batch[key], torch.Tensor):
                     batch[key] = batch[key].to(self.device)
             
-            # Forward pass with intermediate features
-            output = self.model(batch, return_encodings=True)
+            # Forward pass WITHOUT return_encodings to match training behavior
+            output = self.model(batch)
             
-            # Image-level anomaly scores
-            # Support both Dual-Stream (V7.1) and Legacy (V7.0) outputs
-            if "Z_texture" in output:
-                scores = self.model.compute_anomaly_score(
-                    Z_texture=output["Z_texture"],
-                    Z_structure=output["Z_structure"],
-                    Z_texture_pred=output["Z_texture_pred"],
-                    Z_structure_pred=output["Z_structure_pred"],
-                )
-            else:
-                # Fallback for legacy models or Plan E model
-                scores = self.model.compute_anomaly_score(
-                    Z_result=output["Z_result"],
-                    Z_result_pred=output["Z_result_pred"],
-                )
+            # Image-level anomaly scores (use same logic as training)
+            scores = self.model.compute_anomaly_score(
+                Z_result=output.get("Z_result"),
+                Z_result_pred=output.get("Z_result_pred"),
+            )
             
             all_scores.append(scores.cpu())
-            
-            # Generate pixel-level anomaly maps
-            # Method: Compute reconstruction error for each spatial location
-            # Using the image features before pooling
-            batch_size = scores.size(0)
-            anomaly_maps_batch = []
-            
-            for i in range(batch_size):
-                # Create a simple anomaly map based on the global score
-                # In a real implementation, you would compute per-pixel reconstruction errors
-                # Here we create a uniform map with the global score
-                # This is a placeholder - ideally should be computed from spatial features
-                anomaly_map = torch.ones(224, 224) * scores[i].item()
-                anomaly_maps_batch.append(anomaly_map.cpu().numpy())
-            
-            all_anomaly_maps.extend(anomaly_maps_batch)
             
             if "label" in batch:
                 labels = batch["label"].cpu()
@@ -182,20 +229,21 @@ class CausalFiLMEvaluator:
                 binary_labels = (labels != 0).long()
                 all_labels.append(binary_labels)
             
-            if (batch_idx + 1) % 10 == 0:
+            if self.verbose and (batch_idx + 1) % 10 == 0:
                 print(f"  Processed {batch_idx + 1}/{len(dataloader)} batches")
         
         scores = torch.cat(all_scores).numpy()
         labels = torch.cat(all_labels).numpy() if all_labels else None
         raw_labels = torch.cat(all_raw_labels).numpy() if all_raw_labels else None
         
-        print(f"  Total samples: {len(scores)}")
-        if labels is not None:
-            print(f"  Normal samples: {(labels == 0).sum()}")
-            print(f"  Anomaly samples: {(labels == 1).sum()}")
-        print()
-        
-        return scores, labels, raw_labels, all_anomaly_maps
+        if self.verbose:
+            print(f"  Total samples: {len(scores)}")
+            if labels is not None:
+                print(f"  Normal samples: {(labels == 0).sum()}")
+                print(f"  Anomaly samples: {(labels == 1).sum()}")
+            print()
+
+        return scores, labels, raw_labels, None
     
     def compute_metrics(self, scores, labels):
         """
@@ -487,10 +535,11 @@ class CausalFiLMEvaluator:
         Returns:
             metrics: Dictionary of evaluation metrics
         """
-        print("=" * 70)
-        print(f"EVALUATING ON {split.upper()} SPLIT")
-        print("=" * 70)
-        print()
+        if self.verbose:
+            print("=" * 70)
+            print(f"EVALUATING ON {split.upper()} SPLIT")
+            print("=" * 70)
+            print()
         
         # Create dataset
         dataset = WeldingDataset(
@@ -515,26 +564,14 @@ class CausalFiLMEvaluator:
             pin_memory=True,
         )
         
-        # Extract scores and anomaly maps for P-AUPRO
-        scores, labels, raw_labels, anomaly_maps = self.extract_anomaly_scores_and_maps(dataloader)
-        
-        # Compute comprehensive metrics including P-AUPRO
-        metrics = self.compute_metrics_with_pro(scores, labels, anomaly_maps)
-        
-        # Per-class statistics
-        if raw_labels is not None:
-            print("Per-class anomaly scores:")
-            unique_labels = np.unique(raw_labels)
-            for label in unique_labels:
-                mask = raw_labels == label
-                class_scores = scores[mask]
-                class_name = dataset.label_to_name.get(label, f"Class_{label}")
-                print(f"  {class_name}: mean={class_scores.mean():.4f}, "
-                      f"std={class_scores.std():.4f}, "
-                      f"min={class_scores.min():.4f}, "
-                      f"max={class_scores.max():.4f}")
-            print()
-        
+        scores, labels, raw_labels, _ = self.extract_anomaly_scores_and_maps(dataloader)
+
+        metrics = {}
+        if labels is not None:
+            metrics["I-AUROC"] = float(roc_auc_score(labels, scores))
+            metrics["AP"] = float(average_precision_score(labels, scores))
+            metrics["F1-max"] = float(f1_score_max(labels, scores))
+
         return metrics, scores, labels, raw_labels
 
 
@@ -550,6 +587,8 @@ def main():
                        help="Use dummy data and models")
     parser.add_argument("--device", type=str, default="cuda",
                        help="Device to use (cuda/cpu)")
+    parser.add_argument("--verbose", action="store_true",
+                       help="Verbose logging")
     parser.add_argument("--output", type=str, default=None,
                        help="Path to save results (default: outputs/eval_results.json)")
     args = parser.parse_args()
@@ -559,21 +598,32 @@ def main():
         checkpoint_path=args.checkpoint,
         use_dummy=args.dummy,
         device=args.device,
+        verbose=args.verbose,
     )
     
-    # Evaluate
     metrics, scores, labels, raw_labels = evaluator.evaluate(split=args.split)
-    
-    # Save results
-    output_path = args.output or os.path.join(OUTPUT_DIR, "eval_results.json")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-    with open(output_path, "w") as f:
-        json.dump(metrics, f, indent=2, cls=NumpyEncoder)
-    
-    print("=" * 70)
-    print(f"Results saved to: {output_path}")
-    print("=" * 70)
+
+    per_defect = compute_per_defect_auroc(scores, raw_labels) if raw_labels is not None else {}
+
+    print(
+        f"Split: {args.split}, I-AUROC: {metrics.get('I-AUROC', 0.0):.4f}, "
+        f"AP: {metrics.get('AP', 0.0):.4f}, F1-max: {metrics.get('F1-max', 0.0):.4f}"
+    )
+    print("\nPer-Defect-Type I-AUROC:")
+    print("=" * 60)
+    for name in ORDERED_CLASSES:
+        auc = per_defect.get(name)
+        if auc is None:
+            print(f"  {name:40s}: N/A")
+        else:
+            print(f"  {name:40s}: {auc:.4f}")
+    print("=" * 60)
+
+    if args.output:
+        output_path = args.output
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump({"metrics": metrics, "per_defect": per_defect}, f, indent=2, cls=NumpyEncoder)
 
 
 if __name__ == "__main__":

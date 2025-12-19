@@ -225,7 +225,7 @@ bash baselines/Late_Fusion/evaluate.sh --dummy
 
 ---
 
-## 5. Causal-FiLM + Video AE 融合指南
+## 5. Causal-FiLM + Video AE 融合指南（废案）
 
 为了进一步提升SOTA性能，我们引入了**融合策略**，结合Causal-FiLM模型与专用的Video Autoencoder。
 

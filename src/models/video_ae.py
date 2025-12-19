@@ -30,11 +30,11 @@ class SimpleVideoAE(nn.Module):
         return recon
 
 class VideoFeatureExtractor(nn.Module):
-    """Extracts video features using DINOv2.
+    """Extracts video features using DINOv3.
     
-    Processes video frames with DINOv2 and averages features over time.
+    Processes video frames with DINOv3 and averages features over time.
     """
-    def __init__(self, model_name: str = "facebook/dinov2-base", device: str = "cuda"):
+    def __init__(self, model_name: str = "/root/work/models/dinov3-vith16plus-pretrain-lvd1689m", device: str = "cuda"):
         super().__init__()
         self.device = device
         

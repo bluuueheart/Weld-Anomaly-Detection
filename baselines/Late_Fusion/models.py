@@ -154,6 +154,12 @@ class VideoAutoEncoder(nn.Module):
             for param in self.slowfast.parameters():
                 param.requires_grad = False
             self.slowfast.eval()
+        else:
+            # Lightweight per-frame feature projection when SlowFast is unavailable
+            # Project per-frame pooled RGB (C=3) to feature_dim to obtain non-trivial targets
+            self.frame_to_feat = nn.Linear(3, self.feature_dim, bias=False)
+            for param in self.frame_to_feat.parameters():
+                param.requires_grad = False
         
         # Stage 2: FC Auto-encoder
         # Encoder
@@ -189,9 +195,18 @@ class VideoAutoEncoder(nn.Module):
             Features (batch, num_frames, feature_dim)
         """
         if self.slowfast is None:
-            # If no SlowFast model, return dummy features for testing
+            # If no SlowFast model, derive deterministic features from frames
+            # Global average pool per frame over H,W, then linear projection to feature_dim
             batch_size, num_frames = x.shape[0], x.shape[1]
-            return torch.zeros(batch_size, num_frames, self.feature_dim, device=x.device)
+            C = x.shape[2]
+            feats = []
+            with torch.no_grad():
+                for i in range(num_frames):
+                    frame = x[:, i]  # (batch, C, H, W)
+                    pooled = frame.mean(dim=(2, 3))  # (batch, C)
+                    feat = self.frame_to_feat(pooled)  # (batch, feature_dim)
+                    feats.append(feat)
+            return torch.stack(feats, dim=1)
         
         batch_size, num_frames, C, H, W = x.shape
         

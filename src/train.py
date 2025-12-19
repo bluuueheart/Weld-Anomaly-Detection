@@ -715,7 +715,10 @@ class Trainer:
         return float(acc)
     
     def save_checkpoint(self, epoch: int, is_best: bool = False):
-        """Save checkpoint."""
+        """Save checkpoint (only saves best model to conserve disk space)."""
+        if not is_best:
+            return  # Only save best model
+        
         checkpoint = {
             "epoch": epoch,
             "global_step": self.global_step,
@@ -728,15 +731,10 @@ class Trainer:
         if self.scheduler:
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
         
-        # Save latest (overwrite)
-        latest_path = self.checkpoint_dir / "latest_model.pth"
-        torch.save(checkpoint, latest_path)
-
-        # Save best (overwrite when current model is the new best)
-        if is_best:
-            best_path = self.checkpoint_dir / "best_model.pth"
-            torch.save(checkpoint, best_path)
-            print(f"  ✅ Saved best model (epoch {epoch})")
+        # Save best model only
+        best_path = self.checkpoint_dir / "best_model.pth"
+        torch.save(checkpoint, best_path)
+        print(f"  💾 Saved best model (epoch {epoch})")
     
     def train(self):
         """Main training loop."""
